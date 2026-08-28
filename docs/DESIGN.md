@@ -8,19 +8,6 @@ Multi-Tenant Lab Operations Portal
 
 *Document 2 of 2 --- companion to the Product Requirements Document*
 
-  ----------------------- -----------------------------------------------
-  Product                 Corvinus Labs --- Multi-Tenant Lab Operations
-                          Portal
-
-  Document owner          Engineering
-
-  Status                  Proposed
-
-  Source of truth         Document 1 --- Product Requirements Document
-
-  Scope target            MVP --- modular monolith
-  ----------------------- -----------------------------------------------
-
 1\. Purpose of This Document
 
 The PRD defines what the product needs to do --- the problems, users,
