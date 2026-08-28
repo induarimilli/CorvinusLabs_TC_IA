@@ -26,8 +26,8 @@ def initialize_workspace(workspace_id: uuid.UUID, lab_id: uuid.UUID, lab_name: s
             {"id": "e3", "title": "Equipment maintenance", "start": "Fri 9:00 AM", "attendees": 2},
         ],
         "chat_messages": [
-            {"id": "m1", "author": "Alice Chen", "content": "Dataset upload complete — ready for annotation.", "created_at": "10:32 AM"},
-            {"id": "m2", "author": "Carol Wu", "content": "Simulation run finished. Results in Drive.", "created_at": "11:15 AM"},
+            {"id": "m1", "author": "Dave Okonkwo", "content": "Dataset upload complete — ready for annotation.", "created_at": "10:32 AM"},
+            {"id": "m2", "author": "Eve Nguyen", "content": "Simulation run finished. Results in Drive.", "created_at": "11:15 AM"},
         ],
     }
     _workspace_store[workspace_id] = data

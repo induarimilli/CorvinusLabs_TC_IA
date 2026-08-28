@@ -1,3 +1,10 @@
+"""
+Corvinus Labs Portal — FastAPI entrypoint.
+
+Wires CORS, error handling, and feature routers (auth, orgs, memberships,
+invitations, tasks, tools, Google Workspace, onboarding, platform, audit).
+"""
+
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -10,6 +17,7 @@ from app.modules.auth.router import router as auth_router
 from app.modules.google_workspace.router import router as google_workspace_router
 from app.modules.invitations.router import router as invitations_router
 from app.modules.memberships.router import router as memberships_router
+from app.modules.onboarding.router import router as onboarding_router
 from app.modules.organizations.router import router as organizations_router
 from app.modules.platform.router import router as platform_router
 from app.modules.tasks.router import router as tasks_router
@@ -27,6 +35,8 @@ app.add_middleware(ErrorHandlerMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origin_list,
+    # Codespaces / Render preview URLs (in addition to CORS_ORIGINS)
+    allow_origin_regex=r"https://.*\.(github\.dev|app\.github\.dev|onrender\.com)",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -34,6 +44,7 @@ app.add_middleware(
 
 app.include_router(auth_router)
 app.include_router(organizations_router)
+app.include_router(onboarding_router)
 app.include_router(memberships_router)
 app.include_router(invitations_router)
 app.include_router(tasks_router)

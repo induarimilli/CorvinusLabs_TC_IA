@@ -1,3 +1,10 @@
+"""
+RBAC permission matrix and task status transitions.
+
+Admin = org-level; Manager/Contributor = lab-level effective roles.
+Admin intentionally lacks TASKS_CREATE/UPDATE (oversight, not operations).
+"""
+
 from enum import Enum
 
 

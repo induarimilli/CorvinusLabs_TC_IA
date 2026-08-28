@@ -1,3 +1,8 @@
+"""Invitations: create (Admin), inspect by token, accept (creates user/memberships).
+
+Invite email/log includes org, lab, and role. Contributor accept starts lab onboarding.
+"""
+
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -11,7 +16,8 @@ from app.core.auth import decode_token, get_tenant_context
 from app.core.database import get_db
 from app.core.errors import ConflictError, NotFoundError
 from app.core.permissions import Permission, authorize
-from app.models import Invitation, Lab, LabMembership, OrganizationMembership, Role, User
+from app.models import Invitation, Lab, LabMembership, Organization, OrganizationMembership, Role, User
+from app.modules.onboarding.service import ensure_onboarding_record
 from app.schemas import InvitationAcceptRequest, InvitationCreate, InvitationOut
 
 router = APIRouter(tags=["invitations"])
@@ -39,6 +45,37 @@ def _invite_link(token: str) -> str:
     return f"{FRONTEND_URL}/invite/{token}"
 
 
+def _format_invite_email(
+    email: str,
+    org_name: str,
+    lab_name: str | None,
+    org_role: str | None,
+    lab_role: str | None,
+    link: str,
+) -> str:
+    if org_role == "ADMIN":
+        role_line = "Organization Admin"
+        confirm_line = (
+            "By accepting this invitation, you confirm that you are joining as the organization administrator."
+        )
+    else:
+        role_line = f"{lab_role or 'Member'} in {lab_name or 'the lab'}"
+        confirm_line = (
+            f"By accepting this invitation, you confirm your role as {lab_role} in {lab_name} "
+            f"so your onboarding experience matches your responsibilities."
+        )
+
+    return (
+        f"\n[INVITE EMAIL] To: {email}\n"
+        f"Subject: Invitation to {org_name}\n\n"
+        f"Organization: {org_name}\n"
+        f"Lab: {lab_name or '— (org-wide)'}\n"
+        f"Role: {role_line}\n\n"
+        f"{confirm_line}\n\n"
+        f"Accept invitation: {link}\n"
+    )
+
+
 @router.post("/organizations/{org_id}/invitations", response_model=InvitationOut)
 async def create_invitation(
     org_id: uuid.UUID,
@@ -53,8 +90,12 @@ async def create_invitation(
         raise ForbiddenError("lab_role must be MANAGER or CONTRIBUTOR")
 
     lab_result = await db.execute(select(Lab).where(Lab.id == body.lab_id, Lab.organization_id == org_id))
-    if not lab_result.scalar_one_or_none():
+    lab = lab_result.scalar_one_or_none()
+    if not lab:
         raise NotFoundError("Lab not found")
+
+    org_result = await db.execute(select(Organization).where(Organization.id == org_id))
+    org = org_result.scalar_one()
 
     role_name = "Manager" if body.lab_role == "MANAGER" else "Contributor"
     role_result = await db.execute(
@@ -86,7 +127,7 @@ async def create_invitation(
         metadata={"email": body.email, "lab_role": body.lab_role, "lab_id": str(body.lab_id)},
     )
     link = _invite_link(token)
-    print(f"[INVITE] {body.email} → {link}")
+    print(_format_invite_email(body.email, org.name, lab.name, "MEMBER", body.lab_role, link))
     return InvitationOut(
         id=invitation.id,
         email=invitation.email,
@@ -130,13 +171,32 @@ async def get_invitation(token: str, db: AsyncSession = Depends(get_db)):
     invitation = result.scalar_one_or_none()
     if not invitation:
         raise NotFoundError("Invitation not found")
+
+    org_result = await db.execute(select(Organization).where(Organization.id == invitation.organization_id))
+    org = org_result.scalar_one()
+
+    lab_name = None
+    if invitation.lab_id:
+        lab_result = await db.execute(select(Lab).where(Lab.id == invitation.lab_id))
+        lab = lab_result.scalar_one_or_none()
+        lab_name = lab.name if lab else None
+
+    role_display = invitation.org_role if invitation.org_role == "ADMIN" else invitation.lab_role
+
     return {
         "email": invitation.email,
         "status": invitation.status,
         "expires_at": invitation.expires_at,
         "organization_id": str(invitation.organization_id),
+        "organization_name": org.name,
+        "org_role": invitation.org_role,
         "lab_role": invitation.lab_role,
         "lab_id": str(invitation.lab_id) if invitation.lab_id else None,
+        "lab_name": lab_name,
+        "role_display": role_display,
+        "confirmation_message": (
+            "By accepting, you confirm this role so your onboarding and dashboard are configured correctly."
+        ),
     }
 
 
@@ -158,9 +218,10 @@ async def accept_invitation(
     if not invitation:
         raise ConflictError("Invitation expired, already used, or not found")
 
+    if current_user and current_user.email.lower() != invitation.email.lower():
+        current_user = None
+
     if current_user:
-        if current_user.email.lower() != invitation.email.lower():
-            raise ConflictError("Logged-in user email does not match invitation")
         user = current_user
     else:
         user_result = await db.execute(select(User).where(User.email == invitation.email))
@@ -180,20 +241,26 @@ async def accept_invitation(
     )
     existing_mem = existing.scalar_one_or_none()
 
+    target_org_role = invitation.org_role or "MEMBER"
     if not existing_mem:
         membership = OrganizationMembership(
             user_id=user.id,
             organization_id=invitation.organization_id,
             role_id=invitation.role_id,
-            org_role=invitation.org_role or "MEMBER",
+            org_role=target_org_role,
             status="ACTIVE",
         )
         db.add(membership)
     elif existing_mem.status != "ACTIVE":
         existing_mem.status = "ACTIVE"
-        existing_mem.org_role = invitation.org_role or "MEMBER"
+        existing_mem.org_role = target_org_role
+        existing_mem.role_id = invitation.role_id
+    elif target_org_role == "ADMIN":
+        existing_mem.org_role = "ADMIN"
+        existing_mem.role_id = invitation.role_id
 
-    if invitation.lab_id:
+    onboarding_required = False
+    if invitation.lab_id and invitation.lab_role:
         lab_mem = await db.execute(
             select(LabMembership).where(
                 LabMembership.user_id == user.id,
@@ -213,6 +280,12 @@ async def accept_invitation(
             existing_lab.status = "ACTIVE"
             existing_lab.lab_role = invitation.lab_role or existing_lab.lab_role
 
+        if invitation.lab_role == "CONTRIBUTOR":
+            record = await ensure_onboarding_record(
+                db, user.id, invitation.organization_id, invitation.lab_id, invitation.lab_role
+            )
+            onboarding_required = record is not None and record.completed_at is None
+
     update_result = await db.execute(
         update(Invitation)
         .where(Invitation.id == invitation.id, Invitation.status == "PENDING")
@@ -229,18 +302,23 @@ async def accept_invitation(
         action="invitation.accepted",
         entity_type="Invitation",
         entity_id=invitation.id,
-        metadata={"lab_role": invitation.lab_role},
+        metadata={"lab_role": invitation.lab_role, "org_role": invitation.org_role},
     )
+
+    role_label = invitation.org_role if invitation.org_role == "ADMIN" else invitation.lab_role
     await write_notification(
         db,
         organization_id=invitation.organization_id,
         user_id=user.id,
         type="invitation.accepted",
         title="Welcome!",
-        message=f"You have joined as {invitation.lab_role} in your lab.",
+        message=f"You have joined as {role_label}.",
     )
     return {
         "user_id": str(user.id),
         "organization_id": str(invitation.organization_id),
         "lab_id": str(invitation.lab_id) if invitation.lab_id else None,
+        "onboarding_required": onboarding_required,
+        "org_role": invitation.org_role,
+        "lab_role": invitation.lab_role,
     }

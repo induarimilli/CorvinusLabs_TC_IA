@@ -1,5 +1,12 @@
+"""Platform Staff APIs: create org (requires admin invite email), deactivate, analytics.
+
+Staff cannot be granted through org-scoped invitation/role endpoints.
+"""
+
 import uuid
 import re
+import secrets
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends
 from sqlalchemy import func, select
@@ -11,6 +18,7 @@ from app.core.database import get_db
 from app.core.errors import ConflictError, NotFoundError
 from app.core.permissions import Permission, authorize_platform, is_staff
 from app.models import (
+    Invitation,
     Organization,
     OrganizationMembership,
     OrganizationSettings,
@@ -20,9 +28,11 @@ from app.models import (
     ToolAccess,
     User,
 )
-from app.schemas import OrganizationCreate, PlatformAnalyticsOut, OrganizationOut
+from app.schemas import OrganizationCreate, OrganizationCreateOut, PlatformAnalyticsOut, OrganizationOut
 
 router = APIRouter(prefix="/platform", tags=["platform"])
+
+FRONTEND_URL = "http://localhost:5173"
 
 
 async def _create_org_with_defaults(session: AsyncSession, name: str, slug: str, actor_id: uuid.UUID) -> Organization:
@@ -56,7 +66,17 @@ async def _create_org_with_defaults(session: AsyncSession, name: str, slug: str,
     return org
 
 
-@router.post("/organizations", response_model=OrganizationOut)
+def _format_admin_invite_email(org_name: str, email: str, link: str) -> str:
+    return (
+        f"\n[INVITE EMAIL] To: {email}\n"
+        f"Subject: You are invited to administer {org_name}\n\n"
+        f"You have been invited as Organization Admin for {org_name}.\n"
+        f"Accepting this invitation confirms your admin role and grants access to org management.\n\n"
+        f"Accept invitation: {link}\n"
+    )
+
+
+@router.post("/organizations", response_model=OrganizationCreateOut)
 async def create_organization(
     body: OrganizationCreate,
     current_user: User = Depends(get_current_user),
@@ -65,7 +85,35 @@ async def create_organization(
     authorize_platform(current_user, Permission.PLATFORM_ORG_CREATE)
     slug = body.slug or re.sub(r"[^a-z0-9]+", "-", body.name.lower()).strip("-")
     org = await _create_org_with_defaults(db, body.name, slug, current_user.id)
-    return OrganizationOut.model_validate(org)
+
+    admin_role = await db.execute(
+        select(Role).where(Role.organization_id == org.id, Role.name == "Admin")
+    )
+    admin_role_obj = admin_role.scalar_one()
+
+    token = secrets.token_urlsafe(32)
+    invitation = Invitation(
+        organization_id=org.id,
+        email=body.admin_invite_email,
+        role_id=admin_role_obj.id,
+        org_role="ADMIN",
+        lab_role=None,
+        lab_id=None,
+        token=token,
+        status="PENDING",
+        expires_at=datetime.now(timezone.utc) + timedelta(days=7),
+    )
+    db.add(invitation)
+    await db.flush()
+
+    link = f"{FRONTEND_URL}/invite/{token}"
+    print(_format_admin_invite_email(org.name, body.admin_invite_email, link))
+
+    return OrganizationCreateOut(
+        organization=OrganizationOut.model_validate(org),
+        admin_invite_email=body.admin_invite_email,
+        admin_invite_link=link,
+    )
 
 
 @router.patch("/organizations/{org_id}/deactivate", response_model=OrganizationOut)

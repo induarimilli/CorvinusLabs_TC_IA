@@ -1,3 +1,5 @@
+"""Demo login and /auth/me (memberships, pending onboarding, role-change notices)."""
+
 import uuid
 
 from fastapi import APIRouter, Depends
@@ -10,6 +12,7 @@ from app.core.errors import NotFoundError
 from app.core.permissions import is_staff
 from app.core.audit import org_display_role
 from app.models import Lab, LabMembership, Organization, OrganizationMembership, User
+from app.modules.onboarding.service import pending_onboarding_for_user
 from app.schemas import (
     AuthResponse,
     DemoLoginRequest,
@@ -177,6 +180,26 @@ async def get_me(
 
     summaries = _build_membership_summaries(memberships, organizations, lab_rows)
 
+    pending_onboarding = await pending_onboarding_for_user(db, current_user.id)
+    role_notices_result = await db.execute(
+        select(LabMembership, Lab)
+        .join(Lab, Lab.id == LabMembership.lab_id)
+        .where(
+            LabMembership.user_id == current_user.id,
+            LabMembership.role_change_notice.isnot(None),
+            LabMembership.status == "ACTIVE",
+        )
+    )
+    role_change_notices = [
+        {
+            "lab_id": str(lm.lab_id),
+            "organization_id": str(lab.organization_id),
+            "lab_name": lab.name,
+            "message": lm.role_change_notice,
+        }
+        for lm, lab in role_notices_result.all()
+    ]
+
     return MeResponse(
         user=UserOut.model_validate(current_user),
         is_staff=is_staff(current_user),
@@ -203,4 +226,6 @@ async def get_me(
             }
             for lab, lm in lab_rows
         ],
+        pending_onboarding=pending_onboarding,
+        role_change_notices=role_change_notices,
     )

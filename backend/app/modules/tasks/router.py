@@ -1,3 +1,9 @@
+"""Lab task board: CRUD, assignee checks, status transitions, optimistic locking.
+
+Managers and Contributors have full lab task CRUD; Admins are read-only.
+Invalid transitions and stale version → 409 Conflict.
+"""
+
 import uuid
 
 from fastapi import APIRouter, Depends

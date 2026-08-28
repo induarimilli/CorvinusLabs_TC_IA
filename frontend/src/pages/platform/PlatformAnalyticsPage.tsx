@@ -19,6 +19,7 @@ export default function PlatformAnalyticsPage() {
   const { token } = useAuth();
   const queryClient = useQueryClient();
   const [orgName, setOrgName] = useState('');
+  const [adminEmail, setAdminEmail] = useState('');
   const [message, setMessage] = useState('');
 
   const { data: analytics } = useQuery({
@@ -27,11 +28,16 @@ export default function PlatformAnalyticsPage() {
   });
 
   const createMutation = useMutation({
-    mutationFn: (name: string) =>
-      api<{ name: string }>('/platform/organizations', { method: 'POST', body: { name }, token }),
-    onSuccess: (org) => {
-      setMessage(`Created organization: ${org.name}`);
+    mutationFn: () =>
+      api<{ organization: { name: string }; admin_invite_link: string }>('/platform/organizations', {
+        method: 'POST',
+        body: { name: orgName, admin_invite_email: adminEmail },
+        token,
+      }),
+    onSuccess: (res) => {
+      setMessage(`Created ${res.organization.name}. Admin invite: ${res.admin_invite_link}`);
       setOrgName('');
+      setAdminEmail('');
       queryClient.invalidateQueries({ queryKey: ['platform-analytics'] });
     },
     onError: (e: Error) => setMessage(e.message),
@@ -73,20 +79,28 @@ export default function PlatformAnalyticsPage() {
 
       <div className="card" style={{ marginBottom: 24 }}>
         <h3 style={{ marginBottom: 16 }}>Create Organization</h3>
-        <div style={{ display: 'flex', gap: 8 }}>
+        <p style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 12 }}>
+          Every new organization requires at least one admin. An invitation email will be sent to the admin you specify.
+        </p>
+        <div style={{ display: 'grid', gap: 8, marginBottom: 8 }}>
           <input
             value={orgName}
             onChange={e => setOrgName(e.target.value)}
             placeholder="Organization name"
-            style={{ flex: 1 }}
           />
-          <button
-            onClick={() => createMutation.mutate(orgName)}
-            disabled={!orgName || createMutation.isPending}
-          >
-            Create
-          </button>
+          <input
+            value={adminEmail}
+            onChange={e => setAdminEmail(e.target.value)}
+            placeholder="Admin email (required)"
+            type="email"
+          />
         </div>
+        <button
+          onClick={() => createMutation.mutate()}
+          disabled={!orgName || !adminEmail || createMutation.isPending}
+        >
+          Create & Invite Admin
+        </button>
         {message && <p style={{ marginTop: 8, color: 'var(--accent)', fontSize: 13 }}>{message}</p>}
       </div>
 

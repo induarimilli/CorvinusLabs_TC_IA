@@ -1,4 +1,5 @@
-import { useQuery } from '@tanstack/react-query';
+/** Role-aware home: Admin stats, Manager pending tool approvals, Contributor summary. */
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { api } from '../api/client';
@@ -34,6 +35,13 @@ interface Task {
   priority: string;
 }
 
+interface PendingToolAccess {
+  access: { id: string };
+  tool_name: string;
+  user_name: string;
+  user_email: string;
+}
+
 function effectiveRole(orgRole: string, labId: string | null, labMemberships: { lab_id: string; organization_id: string; lab_role: string }[], orgId: string | null): string {
   if (orgRole === 'ADMIN') return 'Admin';
   const lm = labMemberships.find(l => l.organization_id === orgId && l.lab_id === labId);
@@ -47,6 +55,7 @@ function effectiveRole(orgRole: string, labId: string | null, labMemberships: { 
 
 export default function DashboardPage() {
   const { orgId, labId, token, user } = useAuth();
+  const queryClient = useQueryClient();
 
   const { data: me } = useQuery({
     queryKey: ['me'],
@@ -84,6 +93,28 @@ export default function DashboardPage() {
 
   const myTasks = tasks?.filter(t => t.assignee_id === user?.id) || [];
   const openInLab = tasks?.filter(t => t.status !== 'DONE') || [];
+
+  const { data: pendingToolAccess } = useQuery({
+    queryKey: ['tool-access-pending', orgId],
+    queryFn: () => api<PendingToolAccess[]>(`/organizations/${orgId}/tool-access/pending`, { orgId, token }),
+    enabled: !!orgId && roleName === 'Manager',
+    refetchInterval: 5000,
+  });
+
+  const approveMutation = useMutation({
+    mutationFn: (accessId: string) =>
+      api(`/tool-access/${accessId}/approve`, { method: 'POST', orgId, token }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['tool-access-pending'] });
+      queryClient.invalidateQueries({ queryKey: ['tool-access'] });
+    },
+  });
+
+  const denyMutation = useMutation({
+    mutationFn: (accessId: string) =>
+      api(`/tool-access/${accessId}/deny`, { method: 'POST', orgId, token }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['tool-access-pending'] }),
+  });
 
   const statusOrder = ['BACKLOG', 'TODO', 'IN_PROGRESS', 'BLOCKED', 'DONE'];
 
@@ -195,23 +226,53 @@ export default function DashboardPage() {
       )}
 
       {roleName === 'Manager' && (
-        <div className="card" style={{ marginBottom: 24 }}>
-          <h3 style={{ marginBottom: 12 }}>Lab Overview</h3>
-          <div className="stat-grid">
-            <div className="stat-card">
-              <div className="stat-value">{openInLab.length}</div>
-              <div className="stat-label">Open Tasks</div>
+        <>
+          {pendingToolAccess && pendingToolAccess.length > 0 && (
+            <div className="card" style={{ marginBottom: 24, borderColor: 'var(--accent)' }}>
+              <h3 style={{ marginBottom: 12 }}>Tool Access Requests</h3>
+              <table>
+                <thead>
+                  <tr><th>Member</th><th>Tool</th><th>Actions</th></tr>
+                </thead>
+                <tbody>
+                  {pendingToolAccess.map(req => (
+                    <tr key={req.access.id}>
+                      <td>{req.user_name} <span className="mono" style={{ fontSize: 11, color: 'var(--text-muted)' }}>{req.user_email}</span></td>
+                      <td>{req.tool_name}</td>
+                      <td>
+                        <div style={{ display: 'flex', gap: 8 }}>
+                          <button className="sm" onClick={() => approveMutation.mutate(req.access.id)} disabled={approveMutation.isPending}>
+                            Approve
+                          </button>
+                          <button className="sm secondary" onClick={() => denyMutation.mutate(req.access.id)} disabled={denyMutation.isPending}>
+                            Deny
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
-            <div className="stat-card">
-              <div className="stat-value">{tasks?.filter(t => t.status === 'IN_PROGRESS').length || 0}</div>
-              <div className="stat-label">In Progress</div>
-            </div>
-            <div className="stat-card">
-              <div className="stat-value">{tasks?.filter(t => t.status === 'BLOCKED').length || 0}</div>
-              <div className="stat-label">Blocked</div>
+          )}
+          <div className="card" style={{ marginBottom: 24 }}>
+            <h3 style={{ marginBottom: 12 }}>Lab Overview</h3>
+            <div className="stat-grid">
+              <div className="stat-card">
+                <div className="stat-value">{openInLab.length}</div>
+                <div className="stat-label">Open Tasks</div>
+              </div>
+              <div className="stat-card">
+                <div className="stat-value">{tasks?.filter(t => t.status === 'IN_PROGRESS').length || 0}</div>
+                <div className="stat-label">In Progress</div>
+              </div>
+              <div className="stat-card">
+                <div className="stat-value">{tasks?.filter(t => t.status === 'BLOCKED').length || 0}</div>
+                <div className="stat-label">Blocked</div>
+              </div>
             </div>
           </div>
-        </div>
+        </>
       )}
 
       {(roleName === 'Manager' || roleName === 'Contributor') && (

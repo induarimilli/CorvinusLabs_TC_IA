@@ -1,3 +1,4 @@
+/** Admin Labs: create/edit/archive labs and provision Google Workspace. */
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '../../context/AuthContext';

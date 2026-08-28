@@ -1,56 +1,169 @@
 # Corvinus Labs Multi-Tenant Lab Operations Portal
 
-A full-stack demo of the Corvinus Labs internal operations portal — multi-tenant, RBAC-enforced, with async tool provisioning.
+Full-stack demo of the Corvinus Labs internal operations portal — multi-tenant, RBAC-enforced, with async tool and Google Workspace provisioning.
 
-## Quick Start (Local — no Docker)
+## Live demo (from GitHub)
+
+GitHub hosts the **source**, not a permanent public app URL (this stack needs Postgres, Redis, API, and the SPA). Use one of:
+
+| Option | Link / how |
+|--------|------------|
+| **Codespaces (recommended)** | [![Open in GitHub Codespaces](https://img.shields.io/badge/GitHub-Open%20in%20Codespaces-blue?logo=github)](https://codespaces.new/induarimilli/CorvinusLabs_TC_IA) — after create, open port **5173** (App); set visibility to **Public** if sharing |
+| **Docker Compose** | `make up` locally, or in Codespaces after the container is ready |
+| **Always-on URL** | Connect this repo to [Render](https://render.com) with [`render.yaml`](render.yaml) (Blueprint) — see [docs/LIVE_DEMO.md](docs/LIVE_DEMO.md) |
+
+Repo: https://github.com/induarimilli/CorvinusLabs_TC_IA
+
+## Run locally on your machine
+
+Someone shared this repo? Clone it and run the portal on **your** computer.
+
+### 1. Get the code
 
 ```bash
-cd "/Users/induarimilli/Library/CloudStorage/OneDrive-andrew.cmu.edu/CorvinusLabs_Technical_Challenge "
-make install && make setup-db
-make dev-api   # terminal 1
-make dev-web   # terminal 2
+git clone https://github.com/induarimilli/CorvinusLabs_TC_IA.git
+cd CorvinusLabs_TC_IA
 ```
+
+No git? Download **Code → Download ZIP** on GitHub, unzip, and `cd` into the folder.
+
+### 2. Prerequisites
+
+| Tool | Version | Used for |
+|------|---------|----------|
+| **Git** | any | clone (optional if using ZIP) |
+| **Docker Desktop** | recent | easiest full stack (Option A) |
+| **Python** | 3.12+ | API (Option B) |
+| **Node.js** | 20+ | frontend (Option B) |
+| **PostgreSQL** | 16+ | database (Option B only) |
+| **Redis** | 7+ | background jobs (Option B; optional for basic UI) |
+
+You only need Docker for **Option A**. For **Option B**, install Python, Node, and Postgres locally.
+
+### 3. Option A — Docker Compose (recommended)
+
+Starts Postgres, Redis, API, worker, and the web app in containers. Good first choice on a new laptop.
+
+```bash
+make up
+```
+
+Wait until the command finishes (~1–2 minutes on first run). Then open:
 
 | Service | URL |
 |---------|-----|
 | **App** | http://localhost:5173 |
 | **API docs** | http://localhost:8000/docs |
+| **Adminer** (DB UI) | http://localhost:8080 — System: PostgreSQL, Server: `postgres`, User/Password: `corvinus`, Database: `corvinus` |
 
-## Architecture: Role Model (PRD correction)
+Stop everything:
 
-**Intentional correction from earlier EDD implementation:** The PRD scopes Admin to the **organization** and Manager/Contributor to **labs**. Operational roles now live on `LabMembership.lab_role` (`MANAGER` | `CONTRIBUTOR`), while `OrganizationMembership.org_role` is only `ADMIN` | `MEMBER`.
+```bash
+make down
+```
 
-- **Admin** — org-level: settings, labs, members, invitations, tool registry, audit. Implicit access to all labs (no `LabMembership` required).
-- **Manager / Contributor** — resolved **per lab** from `LabMembership.lab_role` for the lab being acted on.
-- One person can be **Manager in Lab A** and **Contributor in Lab B** within the same org (Alice demo persona).
-- Users can belong to **multiple organizations**, each with independent org-level and lab-level roles (Alice: two orgs; Dave: Admin in one org, Manager and Contributor in different labs of another).
+View logs:
 
-Staff (`User.platform_role = STAFF`) remains a platform tier outside the tenant model.
+```bash
+make logs
+```
 
-## Demo Users
+### 4. Option B — Native dev (no Docker)
 
-| User | Organizations & Roles |
-|------|----------------------|
-| Jordan Staff | Platform Staff |
-| Marcus Admin | **Admin** @ Corvinus Robotics |
-| Alice Chen | **Manager** @ Perception Lab (Robotics) · **Contributor** @ Analysis Lab (Biologics) |
-| Carol Wu | **Contributor** @ Perception Lab (Robotics) |
-| Dave Okonkwo | **Manager** @ Perception + **Contributor** @ Simulation (Robotics) · **Admin** @ Corvinus Biologics |
+Use this if you already run Postgres on your machine and prefer separate terminals.
 
-## Key Features
+**One-time setup:**
 
-- **Admin task board** — lab switcher to view any lab's kanban
-- **Members page** — org roster + per-lab role breakdown
-- **Tool registry** — Admin registers tools via connector types (CVAT, Isaac Sim, Protocol Tool)
-- **Invitations** — Admin-only; assigns lab role on accept
-- **Google Workspace tab** — lab-scoped provisioning (Drive/Calendar/Chat/Meet), shared for all lab members; mock API hooks at `/google-workspace/{drive|calendar|chat|meet}/...`
-- **Research tool connectors** — CVAT, Isaac Sim, Protocol Tool via connector API (`/tools/{id}/session`, `/tools/{id}/health`, `/tools/{id}/launch`)
-- **Task detail** — read-only view → Edit → Save (single `task.updated` audit event)
+```bash
+make install          # Python deps + npm packages
+make setup-db         # creates DB user/db, runs migrations, seeds demo data
+```
 
-## Reset Demo
+`setup-db` expects `psql` on your PATH and Postgres listening on `localhost:5432`. Copy env defaults if you need them:
+
+```bash
+cp .env.example .env   # optional; defaults match setup-db
+```
+
+**Run (two terminals):**
+
+```bash
+# Terminal 1 — API
+make dev-api
+
+# Terminal 2 — frontend
+make dev-web
+```
+
+Open http://localhost:5173. API: http://localhost:8000/docs.
+
+Redis is used for async provisioning workers. For a quick UI walkthrough, the API and frontend are enough; start Redis locally (`redis-server`) if you want background jobs to complete.
+
+### 5. Try the demo
+
+On the login screen, pick a seeded identity (no password):
+
+| User | What to explore |
+|------|-----------------|
+| **Jordan Staff** | Platform analytics, create org |
+| **Marcus Admin** | Labs, members, tools, audit |
+| **Dave Okonkwo** | Manager vs Contributor by lab; multi-org |
+| **Eve Nguyen** | Pending Simulation onboarding (after reset) |
+
+Reset to a clean demo state anytime:
 
 ```bash
 make demo-reset
 ```
 
-Runs migrations through `003` (lab roles + Google Workspace table).
+### Troubleshooting
+
+| Problem | Fix |
+|---------|-----|
+| Port 5173 or 8000 in use | Stop the other process or change ports in `docker-compose.yml` / `vite.config.ts` |
+| `make setup-db` fails | Ensure Postgres is running; on macOS: `brew services start postgresql@16` |
+| Docker build slow/fails | Ensure Docker Desktop is running; retry `make up` |
+| Blank login / API errors | Check API at http://localhost:8000/docs; with Docker, run `make logs` |
+| Old demo data | `make demo-reset` |
+
+## Docs (point here in Q&A)
+
+| Doc | What it covers |
+|-----|----------------|
+| [docs/PRD.md](docs/PRD.md) | Product requirements |
+| [docs/DESIGN.md](docs/DESIGN.md) | Engineering design (with implementation notes) |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Local hosting, tenancy, roles, tools, GW, onboarding diagrams |
+| [docs/SCHEMA.md](docs/SCHEMA.md) | Relational database schema |
+| [docs/DEMO_SCRIPT.md](docs/DEMO_SCRIPT.md) | Short live rehearsal walkthrough |
+| [docs/VIDEO_SCRIPT.md](docs/VIDEO_SCRIPT.md) | Filmed video demo script (VO + click paths) |
+| [docs/LIVE_DEMO.md](docs/LIVE_DEMO.md) | Codespaces + Render hosting |
+| [docs/erd.png](docs/erd.png) | ERD image (see SCHEMA for newer tables) |
+
+## Architecture: Role Model (PRD correction)
+
+**Intentional correction from earlier EDD implementation:** The PRD scopes Admin to the **organization** and Manager/Contributor to **labs**. Operational roles live on `LabMembership.lab_role` (`MANAGER` | `CONTRIBUTOR`); `OrganizationMembership.org_role` is only `ADMIN` | `MEMBER`.
+
+- **Admin** — org-level: settings, labs, members, invitations, tool registry, audit, Google Workspace provision. Implicit visibility across labs.
+- **Manager / Contributor** — resolved **per active lab**. Managers may launch all registered research tools **in labs they manage**; Contributors follow lab tool policies and requests.
+- One person can be Manager in Lab A and Contributor in Lab B (Dave).
+- Users can belong to multiple organizations with independent roles (Dave: Robotics + Biologics).
+- **Staff** (`platform_role = STAFF`) is outside the tenant model — not grantable via org invites.
+
+## Demo Users (4)
+
+| User | Organizations & Roles |
+|------|----------------------|
+| Jordan Staff | Platform Staff |
+| Marcus Admin | **Admin** @ Corvinus Robotics |
+| Dave Okonkwo | **Manager** @ Perception · **Contributor** @ Simulation (Robotics) · **Admin** @ Biologics · **Manager** @ Analysis |
+| Eve Nguyen | **Contributor** @ Perception (complete) · **Contributor** @ Simulation — **pending** scavenger-hunt onboarding after reset |
+
+## Key Features
+
+- Lab-scoped RBAC + org/lab switcher
+- Admin Members + invitations (lab + role on invite)
+- Contributor scavenger-hunt onboarding with lab starter tools
+- Task board with valid transitions + optimistic locking (`version`)
+- Research tools + Google Workspace tabs in App Launcher
+- Async mock provisioning for tools and Google Workspace
+- Audit log for org Admins

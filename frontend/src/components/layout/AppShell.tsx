@@ -1,13 +1,21 @@
+/**
+ * App chrome: role-based nav, org/lab switcher, role-change banner,
+ * and scavenger-hunt OnboardingGuide while contributor onboarding is pending.
+ */
 import { Link, useLocation, Navigate } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
+import { useEffect, useState } from 'react';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '../../context/AuthContext';
 import { api } from '../../api/client';
 import OrgLabSwitcher from './OrgLabSwitcher';
+import OnboardingGuide from '../onboarding/OnboardingGuide';
 
 interface MeResponse {
   memberships: { organization_id: string; org_role: string }[];
   lab_memberships: { lab_id: string; organization_id: string; lab_role: string }[];
   is_staff: boolean;
+  pending_onboarding: { lab_id: string; organization_id: string; lab_name: string }[];
+  role_change_notices: { lab_id: string; organization_id: string; lab_name: string; message: string }[];
 }
 
 function effectiveRole(orgRole: string, labId: string | null, labMemberships: MeResponse['lab_memberships'], orgId: string | null): string {
@@ -22,13 +30,35 @@ function effectiveRole(orgRole: string, labId: string | null, labMemberships: Me
 }
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
-  const { user, logout, orgId, labId, isStaff, token } = useAuth();
+  const { user, logout, orgId, labId, isStaff, token, setLabId } = useAuth();
   const location = useLocation();
+  const queryClient = useQueryClient();
+  const [highlightNav, setHighlightNav] = useState<string | null>(null);
 
   const { data: me } = useQuery({
     queryKey: ['me'],
     queryFn: () => api<MeResponse>('/auth/me'),
   });
+
+  const dismissMutation = useMutation({
+    mutationFn: (targetLabId: string) => api(
+      `/organizations/${orgId}/labs/${targetLabId}/membership/dismiss-role-notice`,
+      { method: 'POST', orgId, labId: targetLabId, token }
+    ),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['me'] }),
+  });
+
+  const pendingForContext = me?.pending_onboarding?.find(
+    p => p.organization_id === orgId && (!labId || p.lab_id === labId)
+  ) || me?.pending_onboarding?.find(p => p.organization_id === orgId);
+
+  const hasPendingOnboarding = !isStaff && !!pendingForContext;
+
+  useEffect(() => {
+    if (pendingForContext && labId !== pendingForContext.lab_id) {
+      setLabId(pendingForContext.lab_id);
+    }
+  }, [pendingForContext, labId, setLabId]);
 
   if (isStaff && !location.pathname.startsWith('/platform')) {
     return <Navigate to="/platform" replace />;
@@ -41,6 +71,10 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const orgMembership = me?.memberships.find(m => m.organization_id === orgId);
   const orgRole = orgMembership?.org_role || '';
   const roleName = effectiveRole(orgRole, labId, me?.lab_memberships || [], orgId);
+
+  const roleNotice = me?.role_change_notices?.find(
+    n => n.organization_id === orgId && (!labId || n.lab_id === labId)
+  );
 
   const staffNav = [
     { path: '/platform', label: 'Analytics' },
@@ -84,6 +118,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             <Link
               key={item.path}
               to={item.path}
+              className={highlightNav === item.path ? 'onboarding-nav-highlight' : undefined}
               style={{
                 display: 'block',
                 color: location.pathname === item.path || location.pathname.startsWith(item.path + '/') ? 'var(--accent)' : 'var(--text-secondary)',
@@ -99,7 +134,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           ))}
         </nav>
       </aside>
-      <main style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+      <main style={{ flex: 1, display: 'flex', flexDirection: 'column', position: 'relative' }}>
         <header style={{
           background: 'var(--bg-secondary)', padding: '12px 24px',
           borderBottom: '1px solid var(--border)',
@@ -118,7 +153,26 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             <button className="secondary sm" onClick={logout}>Logout</button>
           </div>
         </header>
+        {roleNotice && (
+          <div style={{
+            background: 'var(--accent-dim)', borderBottom: '1px solid var(--accent)',
+            padding: '10px 24px', display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+            fontSize: 13,
+          }}>
+            <span>{roleNotice.message}</span>
+            <button
+              className="sm secondary"
+              onClick={() => dismissMutation.mutate(roleNotice.lab_id)}
+              disabled={dismissMutation.isPending}
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
         <div style={{ padding: 24, flex: 1, overflow: 'auto' }}>{children}</div>
+        {hasPendingOnboarding && (
+          <OnboardingGuide onHighlightChange={setHighlightNav} />
+        )}
       </main>
     </div>
   );

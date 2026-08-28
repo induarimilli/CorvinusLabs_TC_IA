@@ -1,3 +1,5 @@
+"""Background Google Workspace provisioning: REQUESTED → PROVISIONING → ACTIVE (~2s mock)."""
+
 import asyncio
 import uuid
 

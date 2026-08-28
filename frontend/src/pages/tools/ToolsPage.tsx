@@ -1,3 +1,7 @@
+/**
+ * App Launcher: Research Tools (lab catalog Launch/Request) + Google Workspace tab.
+ * Managers of the active lab see Launch on all tools; contributors follow policies.
+ */
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '../../context/AuthContext';
@@ -17,9 +21,12 @@ interface ToolAccess {
   provisioning_status: string;
 }
 
-interface MyTool {
+interface ToolCatalogItem {
   tool: Tool;
-  access: ToolAccess;
+  access_mode: string;
+  access: ToolAccess | null;
+  can_launch: boolean;
+  can_request: boolean;
 }
 
 interface GoogleWorkspace {
@@ -50,8 +57,9 @@ function StatusBadge({ status }: { status: string }) {
     FAILED: 'badge-failed',
     PROVISIONING: 'badge-provisioning',
     REQUESTED: 'badge-requested',
+    PENDING_APPROVAL: 'badge-requested',
   }[status] || '';
-  return <span className={`badge ${cls}`}>{status}</span>;
+  return <span className={`badge ${cls}`}>{status === 'PENDING_APPROVAL' ? 'PENDING' : status}</span>;
 }
 
 const WORKSPACE_APPS: { id: WorkspaceApp; label: string; icon: string; color: string }[] = [
@@ -245,16 +253,16 @@ export default function ToolsPage() {
   const currentLabMembership = me?.lab_memberships.find(l => l.organization_id === orgId && l.lab_id === labId);
   const currentLabName = currentLabMembership?.lab_name;
 
-  const { data: tools } = useQuery({
-    queryKey: ['tools', orgId],
-    queryFn: () => api<Tool[]>(`/organizations/${orgId}/tools`, { orgId, token }),
-    enabled: !!orgId && tab === 'tools' && !isAdmin,
-  });
+  const isManager = currentLabMembership?.lab_role === 'MANAGER' ||
+    (me?.lab_memberships.some(l => l.organization_id === orgId && l.lab_role === 'MANAGER') ?? false);
 
-  const { data: myTools } = useQuery({
-    queryKey: ['my-tools', orgId],
-    queryFn: () => api<MyTool[]>(`/organizations/${orgId}/my-tools`, { orgId, token }),
-    enabled: !!orgId && tab === 'tools' && !isAdmin,
+  const { data: catalog } = useQuery({
+    queryKey: ['tools-catalog', orgId, labId],
+    queryFn: () => api<ToolCatalogItem[]>(
+      `/organizations/${orgId}/labs/${labId}/tools-catalog`,
+      { orgId, labId, token }
+    ),
+    enabled: !!orgId && !!labId && tab === 'tools' && !isAdmin,
     refetchInterval: 3000,
   });
 
@@ -273,7 +281,7 @@ export default function ToolsPage() {
 
   const requestAccessMutation = useMutation({
     mutationFn: (toolId: string) => api(`/tools/${toolId}/access/request`, { method: 'POST', orgId, token }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['my-tools'] }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['tools-catalog'] }),
   });
 
   const sessionMutation = useMutation({
@@ -285,30 +293,40 @@ export default function ToolsPage() {
   const labWorkspace = googleWs?.find(w => w.lab_id === viewLabId) || (isAdmin ? googleWs?.[0] : googleWs?.find(w => w.lab_id === labId));
   const displayLabName = labWorkspace?.lab_name || labs?.find(l => l.id === viewLabId)?.name || currentLabName || 'Your lab';
 
-  const renderToolCard = (tool: Tool, access?: ToolAccess) => (
-    <div key={tool.id} className="card">
-      <h4>{tool.name}</h4>
-      <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>{tool.description}</p>
-      <span className="mono" style={{ fontSize: 11 }}>{tool.type}</span>
-      <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-        {!access && (
-          <button className="sm" onClick={() => requestAccessMutation.mutate(tool.id)} disabled={requestAccessMutation.isPending}>
-            Request Access
-          </button>
+  const renderCatalogCard = (item: ToolCatalogItem) => {
+    const { tool, access, access_mode, can_launch, can_request } = item;
+    return (
+      <div key={tool.id} className="card">
+        <h4>{tool.name}</h4>
+        <p style={{ fontSize: 13, color: 'var(--text-muted)' }}>{tool.description}</p>
+        <span className="mono" style={{ fontSize: 11 }}>{tool.type}</span>
+        {access_mode === 'AUTO_ONBOARD' && !isManager && (
+          <div style={{ fontSize: 11, color: 'var(--accent)', marginTop: 4 }}>Lab starter tool</div>
         )}
-        {access && access.provisioning_status !== 'ACTIVE' && (
-          <StatusBadge status={access.provisioning_status} />
+        {access_mode === 'REQUEST' && !isManager && (
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>Requires manager approval</div>
         )}
-        {access?.provisioning_status === 'ACTIVE' && (
-          <>
+        <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          {can_launch && (
             <button className="sm" onClick={() => sessionMutation.mutate(tool.id)} disabled={sessionMutation.isPending}>
-              Open Session
+              Launch
             </button>
-          </>
-        )}
+          )}
+          {can_request && (
+            <button className="sm secondary" onClick={() => requestAccessMutation.mutate(tool.id)} disabled={requestAccessMutation.isPending}>
+              Request Access
+            </button>
+          )}
+          {access?.provisioning_status === 'PENDING_APPROVAL' && (
+            <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Awaiting manager approval</span>
+          )}
+          {access && !can_launch && access.provisioning_status !== 'PENDING_APPROVAL' && access.provisioning_status !== 'ACTIVE' && (
+            <StatusBadge status={access.provisioning_status} />
+          )}
+        </div>
       </div>
-    </div>
-  );
+    );
+  };
 
   return (
     <div>
@@ -325,24 +343,15 @@ export default function ToolsPage() {
 
       {tab === 'tools' && !isAdmin && (
         <>
-          {myTools && myTools.length > 0 && (
-            <div className="card" style={{ marginBottom: 24 }}>
-              <h3>My Tools</h3>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 16, marginTop: 12 }}>
-                {myTools.map(({ tool, access }) => renderToolCard(tool, access))}
-              </div>
-            </div>
-          )}
-          <div className="card">
-            <h3>Available Tools</h3>
+          <div className="card" style={{ marginBottom: 24 }}>
+            <h3>Research Tools — {currentLabName || 'Your lab'}</h3>
             <p style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 12 }}>
-              Request access to connect via the platform connector API. Once active, open a session to interact.
+              {isManager
+                ? 'As a manager, you can launch any tool registered in this organization.'
+                : 'Starter tools are provisioned during onboarding. Other tools require a manager approval request.'}
             </p>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 16, marginTop: 12 }}>
-              {tools?.map(tool => {
-                const myAccess = myTools?.find(mt => mt.tool.id === tool.id)?.access;
-                return renderToolCard(tool, myAccess);
-              })}
+              {catalog?.map(renderCatalogCard)}
             </div>
           </div>
           {activeSession && (

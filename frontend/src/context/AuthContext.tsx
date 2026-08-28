@@ -1,3 +1,7 @@
+/**
+ * Auth session: demo login token + active org/lab IDs in localStorage.
+ * All API calls should send these via the client headers.
+ */
 import React, { createContext, useContext, useState, useCallback, ReactNode } from 'react';
 import { api } from '../api/client';
 

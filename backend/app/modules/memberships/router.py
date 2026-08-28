@@ -1,3 +1,8 @@
+"""Org roster and lab membership management (Admin).
+
+Lab role changes set role_change_notice + notification; they do not re-run onboarding.
+"""
+
 import uuid
 
 from fastapi import APIRouter, Depends
@@ -5,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.core.audit import TenantContext, get_user_lab_role, write_audit
+from app.core.audit import TenantContext, get_user_lab_role, write_audit, write_notification
 from app.core.auth import get_tenant_context
 from app.core.database import get_db
 from app.core.errors import ConflictError, ForbiddenError, NotFoundError
@@ -68,7 +73,7 @@ async def org_roster(
             .where(LabMembership.user_id == user.id, Lab.organization_id == org_id, LabMembership.status == "ACTIVE")
         )
         labs = [
-            {"lab_id": str(lm.lab_id), "lab_name": lab.name, "lab_role": lm.lab_role}
+            {"membership_id": str(lm.id), "lab_id": str(lm.lab_id), "lab_name": lab.name, "lab_role": lm.lab_role}
             for lm, lab in lab_rows.all()
         ]
         roster.append(OrgRosterOut(
@@ -195,7 +200,17 @@ async def update_lab_member(
     if body.lab_role:
         if body.lab_role not in ("MANAGER", "CONTRIBUTOR"):
             raise ForbiddenError("Invalid lab_role")
-        lm.lab_role = body.lab_role
+        if lm.lab_role != body.lab_role:
+            lm.lab_role = body.lab_role
+            lm.role_change_notice = f"Your lab role was changed to {body.lab_role}."
+            await write_notification(
+                db,
+                organization_id=org_id,
+                user_id=user.id,
+                type="role.changed",
+                title="Role updated",
+                message=f"Your role in this lab was changed to {body.lab_role}.",
+            )
     if body.status:
         lm.status = body.status
 
@@ -227,7 +242,16 @@ async def update_member(
     if body.org_role:
         if body.org_role not in ("ADMIN", "MEMBER"):
             raise ForbiddenError("org_role must be ADMIN or MEMBER")
-        membership.org_role = body.org_role
+        if membership.org_role != body.org_role:
+            membership.org_role = body.org_role
+            await write_notification(
+                db,
+                organization_id=org_id,
+                user_id=membership.user_id,
+                type="role.changed",
+                title="Role updated",
+                message=f"Your organization role was changed to {body.org_role}.",
+            )
     if body.status:
         membership.status = body.status
 

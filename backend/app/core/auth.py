@@ -1,3 +1,10 @@
+"""
+Auth helpers: JWT issue/verify, current user, and tenant context.
+
+Requires X-Organization-Id (and optional X-Lab-Id) for org-scoped routes.
+Suspended users and inactive memberships are rejected here — not only in the UI.
+"""
+
 import uuid
 from datetime import datetime, timedelta, timezone
 

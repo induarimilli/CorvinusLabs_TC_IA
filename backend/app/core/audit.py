@@ -1,3 +1,10 @@
+"""
+Tenant context, audit/notification writers, and lab-role helpers.
+
+user_is_manager_of_lab — launch/catalog privileges for the active lab.
+user_is_manager_in_org — any-lab manager (approve/deny pending tool requests).
+"""
+
 import uuid
 from dataclasses import dataclass
 
@@ -116,3 +123,27 @@ async def get_user_lab_ids(db: AsyncSession, user_id: uuid.UUID, org_id: uuid.UU
         )
     )
     return list(result.scalars().all())
+
+
+async def user_is_manager_in_org(db: AsyncSession, user_id: uuid.UUID, org_id: uuid.UUID) -> bool:
+    """True if the user is MANAGER in any lab of the org (approvals / org-wide manager actions)."""
+    result = await db.execute(
+        select(LabMembership.id)
+        .join(Lab, Lab.id == LabMembership.lab_id)
+        .where(
+            LabMembership.user_id == user_id,
+            LabMembership.lab_role == "MANAGER",
+            LabMembership.status == "ACTIVE",
+            Lab.organization_id == org_id,
+        )
+        .limit(1)
+    )
+    return result.scalar_one_or_none() is not None
+
+
+async def user_is_manager_of_lab(
+    db: AsyncSession, user_id: uuid.UUID, lab_id: uuid.UUID, org_id: uuid.UUID
+) -> bool:
+    """True only if the user is MANAGER of this specific lab (launch/catalog privileges)."""
+    role = await get_user_lab_role(db, user_id, lab_id, org_id)
+    return role == "MANAGER"

@@ -114,6 +114,8 @@ class MeResponse(BaseModel):
     labs: list[LabOut]
     membership_summaries: list[MembershipSummary] = []
     lab_memberships: list[dict] = []
+    pending_onboarding: list[dict] = []
+    role_change_notices: list[dict] = []
 
 
 class ContextUpdateRequest(BaseModel):
@@ -146,6 +148,50 @@ class OrganizationUpdate(BaseModel):
 class OrganizationCreate(BaseModel):
     name: str
     slug: str | None = None
+    admin_invite_email: EmailStr
+
+
+class OrganizationCreateOut(BaseModel):
+    organization: OrganizationOut
+    admin_invite_email: str
+    admin_invite_link: str
+
+
+class OnboardingStepOut(BaseModel):
+    id: str
+    title: str
+    content: str
+    route: str
+    highlight_nav: str | None = None
+    advance: str  # button | navigate | complete
+
+
+class OnboardingChecklistItemOut(BaseModel):
+    id: str
+    label: str
+
+
+class OnboardingStatusOut(BaseModel):
+    required: bool
+    completed: bool
+    lab_id: uuid.UUID
+    lab_name: str
+    lab_role: str
+    steps: list[OnboardingStepOut] = []
+    completed_step_ids: list[str] = []
+    current_step: OnboardingStepOut | None = None
+    checklist: list[OnboardingChecklistItemOut] = []
+    completed_at: datetime | None = None
+
+
+class OnboardingAdvanceOut(BaseModel):
+    completed_step_ids: list[str]
+    current_step: OnboardingStepOut | None = None
+
+
+class OnboardingCompleteOut(BaseModel):
+    completed: bool
+    tools_granted: int
 
 
 class PlatformAnalyticsOut(BaseModel):
@@ -330,6 +376,14 @@ class ToolAccessOut(BaseModel):
     granted_by_id: uuid.UUID | None
 
     model_config = {"from_attributes": True}
+
+
+class LabToolCatalogItem(BaseModel):
+    tool: ToolOut
+    access_mode: str
+    access: ToolAccessOut | None = None
+    can_launch: bool = False
+    can_request: bool = False
 
 
 class ToolLaunchOut(BaseModel):

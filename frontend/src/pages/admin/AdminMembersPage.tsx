@@ -1,7 +1,15 @@
-import { useState } from 'react';
+/** Admin Members: org roster, invites, and inline Manage Labs (role changes). */
+import { Fragment, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '../../context/AuthContext';
 import { api } from '../../api/client';
+
+interface LabAssignment {
+  membership_id: string;
+  lab_id: string;
+  lab_name: string;
+  lab_role: string;
+}
 
 interface RosterEntry {
   membership_id: string;
@@ -10,24 +18,15 @@ interface RosterEntry {
   email: string;
   org_role: string;
   status: string;
-  labs: { lab_id: string; lab_name: string; lab_role: string }[];
-}
-
-interface LabMember {
-  membership_id: string;
-  user_id: string;
-  name: string;
-  email: string;
-  lab_role: string;
+  labs: LabAssignment[];
 }
 
 export default function AdminMembersPage() {
   const { orgId, token } = useAuth();
   const queryClient = useQueryClient();
-  const [selectedLab, setSelectedLab] = useState('');
-  const [addUserId, setAddUserId] = useState('');
-  const [addLabRole, setAddLabRole] = useState('CONTRIBUTOR');
-  const [section, setSection] = useState<'roster' | 'labs' | 'invites'>('roster');
+  const [section, setSection] = useState<'roster' | 'invites'>('roster');
+  const [expandedUser, setExpandedUser] = useState<string | null>(null);
+  const [addLabByUser, setAddLabByUser] = useState<Record<string, { labId: string; role: string }>>({});
 
   const [inviteEmail, setInviteEmail] = useState('');
   const [inviteLabId, setInviteLabId] = useState('');
@@ -47,14 +46,6 @@ export default function AdminMembersPage() {
     enabled: !!orgId,
   });
 
-  const activeLab = selectedLab || labs?.[0]?.id || '';
-
-  const { data: labMembers } = useQuery({
-    queryKey: ['lab-members', orgId, activeLab],
-    queryFn: () => api<LabMember[]>(`/organizations/${orgId}/labs/${activeLab}/members`, { orgId, token }),
-    enabled: !!orgId && !!activeLab,
-  });
-
   const { data: invitations } = useQuery({
     queryKey: ['invitations', orgId],
     queryFn: () => api<{ id: string; email: string; lab_role: string; status: string; invite_link: string | null }[]>(
@@ -70,25 +61,19 @@ export default function AdminMembersPage() {
   });
 
   const addLabMemberMutation = useMutation({
-    mutationFn: () => api(`/organizations/${orgId}/labs/${activeLab}/members`, {
-      method: 'POST', body: { user_id: addUserId, lab_role: addLabRole }, orgId, token,
-    }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['lab-members'] });
-      queryClient.invalidateQueries({ queryKey: ['roster'] });
-      setAddUserId('');
-    },
+    mutationFn: ({ userId, labId, labRole }: { userId: string; labId: string; labRole: string }) =>
+      api(`/organizations/${orgId}/labs/${labId}/members`, {
+        method: 'POST', body: { user_id: userId, lab_role: labRole }, orgId, token,
+      }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['roster'] }),
   });
 
   const updateLabRoleMutation = useMutation({
-    mutationFn: ({ membershipId, lab_role }: { membershipId: string; lab_role: string }) =>
-      api(`/organizations/${orgId}/labs/${activeLab}/members/${membershipId}`, {
+    mutationFn: ({ labId, membershipId, lab_role }: { labId: string; membershipId: string; lab_role: string }) =>
+      api(`/organizations/${orgId}/labs/${labId}/members/${membershipId}`, {
         method: 'PATCH', body: { lab_role }, orgId, token,
       }),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['lab-members'] });
-      queryClient.invalidateQueries({ queryKey: ['roster'] });
-    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['roster'] }),
   });
 
   const inviteMutation = useMutation({
@@ -105,7 +90,8 @@ export default function AdminMembersPage() {
     onError: (e: Error) => setInviteError(e.message),
   });
 
-  const membersOnly = roster?.filter(r => r.org_role === 'MEMBER') || [];
+  const labsNotAssigned = (member: RosterEntry) =>
+    labs?.filter(l => !member.labs.some(ml => ml.lab_id === l.id)) || [];
 
   return (
     <div>
@@ -113,98 +99,123 @@ export default function AdminMembersPage() {
 
       <div style={{ display: 'flex', gap: 8, marginBottom: 24 }}>
         <button className={section === 'roster' ? '' : 'secondary'} onClick={() => setSection('roster')}>Org Roster</button>
-        <button className={section === 'labs' ? '' : 'secondary'} onClick={() => setSection('labs')}>Per-Lab</button>
         <button className={section === 'invites' ? '' : 'secondary'} onClick={() => setSection('invites')}>Invitations</button>
       </div>
 
       {section === 'roster' && (
         <div className="card">
-          <h3 style={{ marginBottom: 12 }}>Organization Roster</h3>
+          <h3 style={{ marginBottom: 8 }}>Organization Roster</h3>
+          <p style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 16 }}>
+            Set org-level role and manage each member&apos;s lab assignments. A member can hold different roles in different labs.
+          </p>
           <table>
             <thead>
-              <tr><th>Name</th><th>Email</th><th>Org Role</th><th>Labs</th><th>Status</th></tr>
+              <tr><th>Name</th><th>Email</th><th>Org Role</th><th>Lab Assignments</th><th></th></tr>
             </thead>
             <tbody>
               {roster?.map(r => (
-                <tr key={r.user_id}>
-                  <td>{r.name}</td>
-                  <td className="mono">{r.email}</td>
-                  <td>
-                    <select
-                      value={r.org_role}
-                      onChange={e => orgRoleMutation.mutate({ id: r.membership_id, org_role: e.target.value })}
-                      disabled={r.org_role === 'ADMIN' && r.email === 'marcus@corvinus.dev'}
-                    >
-                      <option value="ADMIN">Admin</option>
-                      <option value="MEMBER">Member</option>
-                    </select>
-                  </td>
-                  <td className="mono" style={{ fontSize: 12 }}>
-                    {r.labs.map(l => `${l.lab_name} (${l.lab_role})`).join(', ') || '—'}
-                  </td>
-                  <td>{r.status}</td>
-                </tr>
+                <Fragment key={r.user_id}>
+                  <tr>
+                    <td>{r.name}</td>
+                    <td className="mono">{r.email}</td>
+                    <td>
+                      <select
+                        value={r.org_role}
+                        onChange={e => orgRoleMutation.mutate({ id: r.membership_id, org_role: e.target.value })}
+                        disabled={r.email === 'marcus@corvinus.dev' && r.org_role === 'ADMIN'}
+                      >
+                        <option value="ADMIN">Admin</option>
+                        <option value="MEMBER">Member</option>
+                      </select>
+                    </td>
+                    <td>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                        {r.labs.map(l => (
+                          <span key={l.lab_id} className={`badge badge-${l.lab_role === 'MANAGER' ? 'manager' : 'contributor'}`}>
+                            {l.lab_name}: {l.lab_role}
+                          </span>
+                        ))}
+                        {!r.labs.length && <span style={{ color: 'var(--text-muted)' }}>No labs</span>}
+                      </div>
+                    </td>
+                    <td>
+                      <button className="sm secondary" onClick={() => setExpandedUser(expandedUser === r.user_id ? null : r.user_id)}>
+                        {expandedUser === r.user_id ? 'Close' : 'Manage Labs'}
+                      </button>
+                    </td>
+                  </tr>
+                  {expandedUser === r.user_id && (
+                    <tr>
+                      <td colSpan={5} style={{ background: 'var(--bg-elevated)', padding: 16 }}>
+                        <div style={{ marginBottom: 16 }}>
+                          <strong>Current lab roles</strong>
+                          {r.labs.length === 0 && <p style={{ color: 'var(--text-muted)', fontSize: 13 }}>Not assigned to any lab yet.</p>}
+                          {r.labs.map(l => (
+                            <div key={l.membership_id} style={{ display: 'flex', gap: 12, alignItems: 'center', marginTop: 8 }}>
+                              <span style={{ minWidth: 140 }}>{l.lab_name}</span>
+                              <select
+                                value={l.lab_role}
+                                onChange={e => updateLabRoleMutation.mutate({
+                                  labId: l.lab_id, membershipId: l.membership_id, lab_role: e.target.value,
+                                })}
+                              >
+                                <option value="MANAGER">Manager</option>
+                                <option value="CONTRIBUTOR">Contributor</option>
+                              </select>
+                            </div>
+                          ))}
+                        </div>
+                        {r.org_role === 'MEMBER' && labsNotAssigned(r).length > 0 && (
+                          <div>
+                            <strong>Add to lab</strong>
+                            <div style={{ display: 'flex', gap: 8, marginTop: 8, alignItems: 'end' }}>
+                              <div className="form-row" style={{ flex: 1 }}>
+                                <label>Lab</label>
+                                <select
+                                  value={addLabByUser[r.user_id]?.labId || ''}
+                                  onChange={e => setAddLabByUser(prev => ({
+                                    ...prev, [r.user_id]: { ...prev[r.user_id], labId: e.target.value, role: prev[r.user_id]?.role || 'CONTRIBUTOR' },
+                                  }))}
+                                >
+                                  <option value="">Select lab</option>
+                                  {labsNotAssigned(r).map(l => (
+                                    <option key={l.id} value={l.id}>{l.name}</option>
+                                  ))}
+                                </select>
+                              </div>
+                              <div className="form-row" style={{ width: 160 }}>
+                                <label>Role</label>
+                                <select
+                                  value={addLabByUser[r.user_id]?.role || 'CONTRIBUTOR'}
+                                  onChange={e => setAddLabByUser(prev => ({
+                                    ...prev, [r.user_id]: { ...prev[r.user_id], role: e.target.value, labId: prev[r.user_id]?.labId || '' },
+                                  }))}
+                                >
+                                  <option value="MANAGER">Manager</option>
+                                  <option value="CONTRIBUTOR">Contributor</option>
+                                </select>
+                              </div>
+                              <button
+                                className="sm"
+                                disabled={!addLabByUser[r.user_id]?.labId || addLabMemberMutation.isPending}
+                                onClick={() => {
+                                  const sel = addLabByUser[r.user_id];
+                                  if (!sel?.labId) return;
+                                  addLabMemberMutation.mutate({ userId: r.user_id, labId: sel.labId, labRole: sel.role || 'CONTRIBUTOR' });
+                                }}
+                              >
+                                Add
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
               ))}
             </tbody>
           </table>
-        </div>
-      )}
-
-      {section === 'labs' && (
-        <div className="card">
-          <h3 style={{ marginBottom: 12 }}>Per-Lab Breakdown</h3>
-          <div className="form-row" style={{ maxWidth: 320, marginBottom: 16 }}>
-            <label>Lab</label>
-            <select value={activeLab} onChange={e => setSelectedLab(e.target.value)}>
-              {labs?.map(l => <option key={l.id} value={l.id}>{l.name}</option>)}
-            </select>
-          </div>
-
-          <table style={{ marginBottom: 24 }}>
-            <thead>
-              <tr><th>Name</th><th>Email</th><th>Lab Role</th></tr>
-            </thead>
-            <tbody>
-              {labMembers?.map(m => (
-                <tr key={m.membership_id}>
-                  <td>{m.name}</td>
-                  <td className="mono">{m.email}</td>
-                  <td>
-                    <select
-                      value={m.lab_role}
-                      onChange={e => updateLabRoleMutation.mutate({ membershipId: m.membership_id, lab_role: e.target.value })}
-                    >
-                      <option value="MANAGER">Manager</option>
-                      <option value="CONTRIBUTOR">Contributor</option>
-                    </select>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-
-          <h4 style={{ marginBottom: 8 }}>Add Existing Member to Lab</h4>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: 12, alignItems: 'end' }}>
-            <div className="form-row">
-              <label>Member</label>
-              <select value={addUserId} onChange={e => setAddUserId(e.target.value)}>
-                <option value="">Select member</option>
-                {membersOnly.map(m => (
-                  <option key={m.user_id} value={m.user_id}>{m.name}</option>
-                ))}
-              </select>
-            </div>
-            <div className="form-row">
-              <label>Role in this lab</label>
-              <select value={addLabRole} onChange={e => setAddLabRole(e.target.value)}>
-                <option value="MANAGER">Manager</option>
-                <option value="CONTRIBUTOR">Contributor</option>
-              </select>
-            </div>
-            <button onClick={() => addLabMemberMutation.mutate()} disabled={!addUserId || addLabMemberMutation.isPending}>
-              Add to Lab
-            </button>
-          </div>
         </div>
       )}
 

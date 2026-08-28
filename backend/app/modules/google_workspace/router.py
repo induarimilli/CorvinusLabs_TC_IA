@@ -1,3 +1,8 @@
+"""Lab-scoped Google Workspace: Admin provision + shared Drive/Calendar/Chat/Meet APIs.
+
+Not modeled as per-user ToolAccess — every active lab member may use an ACTIVE workspace.
+"""
+
 import uuid
 
 from fastapi import APIRouter, BackgroundTasks, Depends

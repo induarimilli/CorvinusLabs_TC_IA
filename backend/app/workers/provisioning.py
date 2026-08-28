@@ -1,3 +1,5 @@
+"""Async tool access provisioning/revocation (connector mock + status updates)."""
+
 import asyncio
 import json
 import uuid
@@ -51,6 +53,9 @@ async def process_access(session: AsyncSession, access_id: uuid.UUID, org_id: uu
             access.provisioning_status = "ACTIVE"
             access.access_level = "view"
         await session.commit()
+
+    elif status == "PENDING_APPROVAL":
+        return
 
     elif status == "REVOKING":
         if "revoke" in connector.capabilities():

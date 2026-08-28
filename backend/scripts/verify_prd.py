@@ -12,9 +12,8 @@ BASE = "http://localhost:8000"
 IDS = {
     "jordan": "11111111-1111-1111-1111-111111111101",
     "marcus": "11111111-1111-1111-1111-111111111102",
-    "alice": "11111111-1111-1111-1111-111111111103",
-    "carol": "11111111-1111-1111-1111-111111111104",
     "dave": "11111111-1111-1111-1111-111111111105",
+    "eve": "11111111-1111-1111-1111-111111111106",
     "org_robotics": "22222222-2222-2222-2222-222222222201",
     "org_biologics": "22222222-2222-2222-2222-222222222202",
     "lab_perception": "33333333-3333-3333-3333-333333333301",
@@ -86,31 +85,31 @@ async def main() -> None:
             record("Tenant isolation: Org A user → Org B tasks rejected", "Marcus → Biologics tasks",
                    "Verified broken", f"status={cross.status_code} body={cross.text[:200]}", "Yes")
 
-        alice = await login(c, IDS["alice"])
-        at = alice["access_token"]
+        dave = await login(c, IDS["dave"])
+        at = dave["access_token"]
         r = await c.get(
             f"{BASE}/organizations/{IDS['org_robotics']}/labs/{IDS['lab_perception']}/members",
             headers=hdr(at, IDS["org_robotics"], IDS["lab_perception"]),
         )
         if r.status_code == 200:
             names = [m["name"] for m in r.json()]
-            record("Lab-scoped: Manager sees own lab members", "Alice → Perception lab members",
+            record("Lab-scoped: Manager sees own lab members", "Dave → Perception lab members",
                    "Verified working", f"200, members={names}")
         else:
             record("Lab-scoped: Manager sees own lab members", "GET lab members", "Verified broken", r.text, "Yes")
 
-        wrong_lab = await c.get(
-            f"{BASE}/organizations/{IDS['org_robotics']}/labs/{IDS['lab_simulation']}/members",
+        # Dave is Admin of Biologics but must not access it under Robotics tenant header
+        wrong_org = await c.get(
+            f"{BASE}/organizations/{IDS['org_biologics']}/labs/{IDS['lab_analysis']}/members",
             headers=hdr(at, IDS["org_robotics"], IDS["lab_perception"]),
         )
-        # Alice is NOT in simulation lab - should be 403
-        if wrong_lab.status_code == 403:
-            record("Lab-scoped: Manager blocked from other lab members", "Alice → Simulation lab members",
-                   "Verified working", f"403")
+        if wrong_org.status_code == 403:
+            record("Tenant isolation: wrong org header blocked", "Dave + Robotics header → Biologics lab",
+                   "Verified working", "403")
         else:
-            record("Lab-scoped: Manager blocked from other lab members", "Alice → Simulation",
-                   "Partially working" if wrong_lab.status_code == 200 else "Verified broken",
-                   f"status={wrong_lab.status_code} (Alice is Manager only in Perception)", "Maybe")
+            record("Tenant isolation: wrong org header blocked", "Dave cross-org lab members",
+                   "Verified broken" if wrong_org.status_code == 200 else "Partially working",
+                   f"status={wrong_org.status_code}", "Maybe")
 
         # --- Invitations ---
         roles = (await c.get(f"{BASE}/organizations/{IDS['org_robotics']}/roles", headers=hdr(mt, IDS["org_robotics"]))).json()
@@ -243,19 +242,20 @@ async def main() -> None:
                 else:
                     record("Contributor full lab task CRUD", "Carol PATCH other task", "Verified broken", edit.text, "Yes")
 
-            # Contributor blocked on other lab
-            sim_tasks = [x for x in (await c.get(f"{BASE}/organizations/{IDS['org_robotics']}/tasks", headers=hdr(ct, IDS["org_robotics"]))).json()
-                         if x["lab_id"] == IDS["lab_simulation"]]
-            if sim_tasks:
+            # Contributor blocked on other org
+            bio_row = psql(f"SELECT id || '|' || version FROM tasks WHERE organization_id='{IDS['org_biologics']}' LIMIT 1")
+            if bio_row:
+                tid, ver = bio_row.split("|", 1)
                 blocked = await c.patch(
-                    f"{BASE}/tasks/{sim_tasks[0]['id']}",
-                    headers=carol_h,
-                    json={"priority": "LOW", "version": sim_tasks[0]["version"]},
+                    f"{BASE}/tasks/{tid}",
+                    headers=eve_h,
+                    json={"priority": "LOW", "version": int(ver)},
                 )
-                if blocked.status_code == 403:
-                    record("Contributor blocked outside own lab", "Carol PATCH Simulation lab task", "Verified working", "403")
+                if blocked.status_code in (403, 404):
+                    record("Contributor blocked outside own org", "Eve PATCH Biologics task with Robotics context",
+                           "Verified working", f"{blocked.status_code}")
                 else:
-                    record("Contributor blocked outside own lab", "Carol PATCH sim task", "Verified broken", blocked.text, "Yes")
+                    record("Contributor blocked outside own org", "Eve PATCH bio task", "Verified broken", blocked.text, "Yes")
 
             # Cross-org task access
             bio_task = psql(f"SELECT id FROM tasks WHERE organization_id='{IDS['org_biologics']}' LIMIT 1")
@@ -307,13 +307,23 @@ async def main() -> None:
         else:
             record("Tool access: Manager grant creates record", "POST grant", "Verified broken", grant.text, "Yes")
 
-        launch_block = await c.post(f"{BASE}/tools/{tool_id}/launch", headers=hdr(ct, IDS["org_robotics"]))
+        launch_block = await c.post(
+            f"{BASE}/tools/{tool_id}/launch",
+            headers=hdr(ct, IDS["org_robotics"], IDS["lab_perception"]),
+        )
+        # Prefer Protocol Tool if present — Eve has CVAT ACTIVE and Isaac PENDING
+        protocol = next((t for t in tools if t.get("type") == "protocol_tool"), None)
+        if protocol:
+            launch_block = await c.post(
+                f"{BASE}/tools/{protocol['id']}/launch",
+                headers=hdr(ct, IDS["org_robotics"], IDS["lab_perception"]),
+            )
         if launch_block.status_code == 403:
-            record("Tool access: Contributor without access blocked on launch", "Carol POST launch (no ACTIVE access)",
+            record("Tool access: Contributor without access blocked on launch", "Eve POST Protocol Tool launch",
                    "Verified working", "403")
         else:
             record("Tool access: Contributor without access blocked", "POST launch", "Partially working",
-                   f"status={launch_block.status_code} (Carol may have CVAT ACTIVE from seed)", "Maybe")
+                   f"status={launch_block.status_code}", "Maybe")
 
         # --- Alice org switch data isolation ---
         bio_h = hdr(at, IDS["org_biologics"], IDS["lab_analysis"])

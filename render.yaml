@@ -1,0 +1,52 @@
+# Render Blueprint — connect this GitHub repo at https://dashboard.render.com/blueprints
+# After first deploy, set web VITE_API_URL to the API public URL and rebuild web;
+# set API CORS_ORIGINS to the web public URL.
+
+services:
+  - type: web
+    name: corvinus-api
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    plan: free
+    healthCheckPath: /docs
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: corvinus-db
+          property: connectionString
+      - key: DATABASE_URL_SYNC
+        fromDatabase:
+          name: corvinus-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          name: corvinus-redis
+          type: keyvalue
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true
+      - key: CORS_ORIGINS
+        sync: false
+    startCommand: bash scripts/render_start.sh
+
+
+  - type: web
+    name: corvinus-web
+    runtime: docker
+    dockerfilePath: ./frontend/Dockerfile.prod
+    dockerContext: ./frontend
+    plan: free
+    envVars:
+      - key: VITE_API_URL
+        sync: false
+
+  - type: keyvalue
+    name: corvinus-redis
+    plan: free
+    maxmemoryPolicy: allkeys-lru
+
+databases:
+  - name: corvinus-db
+    plan: free
+    postgresMajorVersion: "16"

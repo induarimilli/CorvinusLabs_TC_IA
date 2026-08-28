@@ -1,3 +1,12 @@
+"""
+SQLAlchemy domain models for the multi-tenant lab portal.
+
+See docs/SCHEMA.md for table/FK summary. Notable fields:
+  - OrganizationMembership.org_role: ADMIN | MEMBER
+  - LabMembership.lab_role: MANAGER | CONTRIBUTOR
+  - User.platform_role: STAFF (platform tier) or null
+"""
+
 import enum
 import uuid
 from datetime import datetime
@@ -117,6 +126,7 @@ class LabMembership(Base):
     lab_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("labs.id"), nullable=False)
     role_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("roles.id"), nullable=False)
     lab_role: Mapped[str] = mapped_column(String(50), default="CONTRIBUTOR")  # MANAGER | CONTRIBUTOR
+    role_change_notice: Mapped[str | None] = mapped_column(Text, nullable=True)
     joined_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     status: Mapped[str] = mapped_column(String(50), default=MembershipStatus.ACTIVE.value)
 
@@ -268,6 +278,31 @@ class Notification(Base):
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     message: Mapped[str] = mapped_column(Text, nullable=False)
     is_read: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class LabToolPolicy(Base):
+    __tablename__ = "lab_tool_policies"
+    __table_args__ = (UniqueConstraint("lab_id", "tool_type", name="uq_lab_tool_policy"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    lab_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("labs.id"), nullable=False)
+    tool_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    access_mode: Mapped[str] = mapped_column(String(50), nullable=False)  # AUTO_ONBOARD | REQUEST
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class LabOnboardingProgress(Base):
+    __tablename__ = "lab_onboarding_progress"
+    __table_args__ = (UniqueConstraint("user_id", "lab_id", name="uq_lab_onboarding"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    organization_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("organizations.id"), nullable=False)
+    lab_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("labs.id"), nullable=False)
+    lab_role: Mapped[str] = mapped_column(String(50), nullable=False)
+    steps_completed: Mapped[list] = mapped_column(JSON, default=list)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
