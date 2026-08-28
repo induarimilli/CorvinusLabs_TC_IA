@@ -110,7 +110,136 @@ sequenceDiagram
 
 ---
 
-## 3. Role model
+## 3. API architecture
+
+The backend is a **modular monolith**: one FastAPI process (`backend/app/main.py`), feature routers per domain, shared core for auth/RBAC/errors, and a single Postgres database. OpenAPI is auto-generated at `/docs`.
+
+### Layer breakdown
+
+```mermaid
+flowchart TB
+  subgraph entry [Entry]
+    main[main.py]
+    health["/health"]
+    connectors["/connectors"]
+  end
+  subgraph middleware [Middleware]
+    cors[CORS]
+    errors[ErrorHandlerMiddleware]
+  end
+  subgraph routers [Feature routers]
+    auth_r[auth]
+    org_r[organizations]
+    mem_r[memberships]
+    inv_r[invitations]
+    task_r[tasks]
+    tool_r[tools]
+    gw_r[google_workspace]
+    onb_r[onboarding]
+    plat_r[platform]
+    aud_r[audit]
+  end
+  subgraph core [Core cross-cutting]
+    auth_core["auth.py — JWT + TenantContext"]
+    perm["permissions.py — RBAC matrix"]
+    db["database.py — async session"]
+    audit["audit.py — events + lab helpers"]
+    config["config.py — settings"]
+  end
+  subgraph data [Data and side effects]
+    models["models — SQLAlchemy ORM"]
+    schemas["schemas — Pydantic DTOs"]
+    conn["connectors — tool registry"]
+    workers["workers — provisioning jobs"]
+  end
+
+  main --> middleware --> routers
+  routers --> core
+  routers --> models
+  routers --> schemas
+  routers --> workers
+  workers --> conn
+  core --> db --> models
+```
+
+| Layer | Location | Responsibility |
+|-------|----------|----------------|
+| Entry | `app/main.py` | Wire middleware, mount routers, `/health`, `/connectors` |
+| Middleware | `app/core/errors.py`, CORS in `main.py` | Uniform error JSON, request IDs, cross-origin for SPA |
+| Routers | `app/modules/*/router.py` | HTTP handlers — one module per product domain |
+| Core | `app/core/*` | Auth, tenant context, RBAC, DB session, audit writers |
+| Models | `app/models/` | SQLAlchemy entities; Alembic migrations in `backend/alembic/` |
+| Schemas | `app/schemas/` | Pydantic request/response types (`*Create`, `*Update`, `*Out`) |
+| Connectors | `app/connectors/` | Research-tool adapter registry (CVAT, Isaac Sim, Protocol Tool) |
+| Workers | `app/workers/` | Tool + Google Workspace provisioning (BackgroundTasks or Redis worker) |
+
+### Handler pattern
+
+Every org-scoped route follows the same pipeline:
+
+1. **`ErrorHandlerMiddleware`** — assigns `request_id`; catches `APIError` → JSON error body  
+2. **`get_current_user`** — `Authorization: Bearer <JWT>` → `User` (401 if missing, invalid, or suspended)  
+3. **`get_tenant_context`** — `X-Organization-Id` + optional `X-Lab-Id` → `TenantContext`  
+4. **`authorize(ctx, Permission.*)`** — effective role (Admin / Manager / Contributor) vs permission matrix  
+5. **Handler** — SQLAlchemy queries, optional `write_audit`, return Pydantic `response_model`
+
+Platform routes (`/platform/*`) call `authorize_platform(user, Permission.*)` for Staff-only operations instead of tenant RBAC.
+
+**Public or unauthenticated routes:** `GET /health`, `GET /connectors`, `GET /auth/demo-users`, `POST /auth/demo-login`, `GET /invitations/{token}`.
+
+### Endpoint map by module
+
+Routers are mounted flat in `main.py` (no global `/api/v1` prefix). Paths below are representative; see `/docs` for the full contract.
+
+| Tag | Path pattern | Auth | Purpose |
+|-----|--------------|------|---------|
+| `auth` | `/auth/demo-users`, `/auth/demo-login`, `/auth/me` | Mixed | Passwordless demo login; current user + org/lab memberships |
+| `organizations` | `/organizations/{org_id}/*`, `/organizations/labs/{lab_id}` | Tenant | Org profile, settings, dashboard stats, lab CRUD |
+| `memberships` | `/organizations/{org_id}/members*`, `.../labs/{lab_id}/members*` | Tenant + RBAC | Org roster, lab members, org/lab role updates |
+| `invitations` | `/organizations/{org_id}/invitations`, `/invitations/{token}/*` | Tenant / public | Create & list invites; token preview + accept |
+| `tasks` | `/organizations/{org_id}/tasks`, `/tasks/{task_id}/*` | Tenant + lab RBAC | Task CRUD, comments, attachments; optimistic lock on `version` |
+| `tools` | `/organizations/{org_id}/tools*`, `/tools/{tool_id}/*` | Tenant + lab RBAC | Tool registry, lab catalog, access workflow, launch/session/health |
+| `google-workspace` | `/organizations/{org_id}/labs/{lab_id}/google-workspace/*` | Tenant + RBAC | Provision lab workspace; mock Drive, Calendar, Chat, Meet APIs |
+| `onboarding` | `/organizations/{org_id}/labs/{lab_id}/onboarding/*` | Tenant | Scavenger-hunt steps, complete, dismiss role-change notice |
+| `platform` | `/platform/organizations`, `/platform/analytics` | Staff JWT | Create/deactivate orgs, platform-wide analytics |
+| `audit` | `/organizations/{org_id}/audit-events`, `.../notifications` | Admin | Immutable audit log + user notifications |
+
+Lab-scoped RBAC resolves the **effective role** from `X-Lab-Id` when set; Admin bypasses lab membership checks but still uses the org-level permission set (e.g. read-only on tasks).
+
+### Async side effects
+
+Routes that start provisioning enqueue **FastAPI `BackgroundTasks`** in local demo mode (or a Redis-backed worker in Docker Compose):
+
+- **Tool access** — `REQUESTED` → `PROVISIONING` → `ACTIVE` / `FAILED` via `app/connectors/registry.py`
+- **Google Workspace** — same state machine on `lab_google_workspace`
+
+Launch, session, and health checks for research tools hit the connector registry synchronously (mock responses in this demo).
+
+### Error contract
+
+All handled failures return:
+
+```json
+{
+  "error": {
+    "code": "FORBIDDEN",
+    "message": "Role Contributor lacks permission tools.grant",
+    "requestId": "550e8400-e29b-41d4-a716-446655440000"
+  }
+}
+```
+
+| Code | HTTP | Typical cause |
+|------|------|---------------|
+| `UNAUTHORIZED` | 401 | Missing/invalid JWT, suspended user |
+| `FORBIDDEN` | 403 | No org membership, wrong role, tenant mismatch |
+| `NOT_FOUND` | 404 | Resource absent or outside active org |
+| `CONFLICT` | 409 | Stale task `version`, invalid state transition |
+| `INTERNAL_ERROR` | 500 | Unhandled exception (message included in demo) |
+
+---
+
+## 4. Role model
 
 ```mermaid
 flowchart TB
@@ -138,7 +267,7 @@ Managers in the active lab may **launch all org-registered research tools** with
 
 ---
 
-## 4. Research tool access & provisioning
+## 5. Research tool access & provisioning
 
 ```mermaid
 stateDiagram-v2
@@ -163,7 +292,7 @@ Lab policies (`lab_tool_policies.access_mode`):
 
 ---
 
-## 5. Google Workspace (lab infrastructure)
+## 6. Google Workspace (lab infrastructure)
 
 Shared per lab — **not** per-user `ToolAccess`.
 
@@ -182,7 +311,7 @@ State machine mirrors tools: `REQUESTED` → `PROVISIONING` → `ACTIVE` (mock ~
 
 ---
 
-## 6. Contributor onboarding (scavenger hunt)
+## 7. Contributor onboarding (scavenger hunt)
 
 ```mermaid
 flowchart TD
@@ -206,14 +335,16 @@ Onboarding is first-login per lab. Role changes later show a banner (`role_chang
 
 ---
 
-## 7. Frontend structure
+## 8. Frontend structure
 
 - React + Vite + TanStack Query  
 - [`AuthContext`](../frontend/src/context/AuthContext.tsx) — token, orgId, labId  
 - [`AppShell`](../frontend/src/components/layout/AppShell.tsx) — nav by effective role, onboarding guide, role-change banner  
 - Org/lab switcher updates localStorage + API headers  
 
-## 8. Backend module map
+## 9. Backend module map
+
+See [§3 API architecture](#3-api-architecture) for layers, handler pipeline, endpoint map, and error contract.
 
 | Module | Responsibility |
 |--------|----------------|
