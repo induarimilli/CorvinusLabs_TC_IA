@@ -41,11 +41,7 @@ migrate:
 	docker compose exec api alembic upgrade head
 
 seed:
-	@if command -v docker >/dev/null 2>&1 && docker compose ps -q api 2>/dev/null | grep -q .; then \
-		docker compose exec api python scripts/seed.py; \
-	else \
-		cd backend && python3 scripts/seed.py; \
-	fi
+	docker compose exec api python scripts/seed.py
 
 demo-reset:
 	@if command -v docker >/dev/null 2>&1 && docker compose ps -q postgres 2>/dev/null | grep -q .; then \
