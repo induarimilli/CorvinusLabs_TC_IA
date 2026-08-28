@@ -1,12 +1,28 @@
 # Architecture
 
-System architecture for the Corvinus Labs Multi-Tenant Lab Operations Portal as implemented in this repository.
+**As-built** system architecture for the Corvinus Labs Multi-Tenant Lab Operations Portal. This document describes what is implemented in this repository today.
 
-Related docs: [PRD.md](PRD.md) · [DESIGN.md](DESIGN.md) · [SCHEMA.md](SCHEMA.md) · [DEMO_SCRIPT.md](DEMO_SCRIPT.md)
+Related docs: [PRD.md](PRD.md) · [DESIGN.md](DESIGN.md) (original EDD + [Appendix A: deviations](DESIGN.md#appendix-a-as-built-deviations-from-this-document)) · [SCHEMA.md](SCHEMA.md) · [DEMO_SCRIPT.md](DEMO_SCRIPT.md)
 
 ---
 
-## 1. Local hosting
+## 1. Technology stack (as built)
+
+| Layer | Original EDD choice | Implemented |
+|-------|---------------------|-------------|
+| Frontend | React + TypeScript | React + TypeScript + Vite + TanStack Query |
+| Backend | Python + FastAPI | Python 3.12 + FastAPI (async SQLAlchemy) |
+| Database | PostgreSQL | PostgreSQL 16, Alembic migrations `001`–`005` |
+| Authentication | Supabase Auth | **Demo JWT** — seeded passwordless login; RBAC in-app |
+| Async jobs | Redis → worker | **`BackgroundTasks` primary**; optional Redis worker in Compose |
+| Object storage | S3-compatible | MinIO in Compose; attachment rows store URLs only |
+| Cache | Redis (also queue) | **No app cache layer** |
+| External tools | ToolConnector registry | CVAT, Isaac Sim, Protocol Tool (mock connectors) |
+| Google Workspace | ToolConnector (EDD) | **Separate module** — `lab_google_workspace` + mock APIs |
+
+---
+
+## 2. Local hosting
 
 Two supported ways to run locally.
 
@@ -71,7 +87,7 @@ Local demos usually use **in-process FastAPI BackgroundTasks** for tool and Goog
 
 ---
 
-## 2. Multi-tenant request path
+## 3. Multi-tenant request path
 
 Every org-scoped API call carries:
 
@@ -110,7 +126,7 @@ sequenceDiagram
 
 ---
 
-## 3. API architecture
+## 4. API architecture
 
 The backend is a **modular monolith**: one FastAPI process (`backend/app/main.py`), feature routers per domain, shared core for auth/RBAC/errors, and a single Postgres database. OpenAPI is auto-generated at `/docs`.
 
@@ -239,7 +255,7 @@ All handled failures return:
 
 ---
 
-## 4. Role model
+## 5. Role model
 
 ```mermaid
 flowchart TB
@@ -265,9 +281,20 @@ Same person can be **Manager in Lab A** and **Contributor in Lab B** (e.g. Dave)
 
 Managers in the active lab may **launch all org-registered research tools** without a `ToolAccess` row. Contributors follow per-lab `lab_tool_policies`.
 
+**Admin is oversight, not operations:** org Admins manage settings, members, labs, the tool registry, audit, and Google Workspace provisioning, but are **read-only on tasks** (no create/update/delete). Task CRUD is Manager/Contributor work.
+
+| Effective role | Task ops | Tool registry | Tool grant/revoke | GW provision | Audit |
+|----------------|----------|---------------|-------------------|--------------|-------|
+| Staff | — (platform only) | — | — | — | — |
+| Admin | Read | Manage | Manage (org) | Manage | Read |
+| Manager | Full CRUD (lab) | Read | Grant/revoke (lab) | Use | — |
+| Contributor | Full CRUD (lab) | Read | Request access | Use | — |
+
+Legacy `roles` table + `role_id` FKs remain from migration `001`; authorization reads **`org_role` / `lab_role`** only.
+
 ---
 
-## 5. Research tool access & provisioning
+## 6. Research tool access & provisioning
 
 ```mermaid
 stateDiagram-v2
@@ -292,7 +319,7 @@ Lab policies (`lab_tool_policies.access_mode`):
 
 ---
 
-## 6. Google Workspace (lab infrastructure)
+## 7. Google Workspace (lab infrastructure)
 
 Shared per lab — **not** per-user `ToolAccess`.
 
@@ -309,9 +336,11 @@ flowchart LR
 
 State machine mirrors tools: `REQUESTED` → `PROVISIONING` → `ACTIVE` (mock ~2–3s via BackgroundTasks). Members of other labs in the same org cannot read Lab B’s workspace.
 
+Unlike research tools, Google Workspace is **not** routed through `ToolConnector`. It uses `backend/app/modules/google_workspace/` and `google_workspace_client.py` (in-memory mocks). A legacy `google_drive` connector exists in the registry but is not the primary GW path.
+
 ---
 
-## 7. Contributor onboarding (scavenger hunt)
+## 8. Contributor onboarding (scavenger hunt)
 
 ```mermaid
 flowchart TD
@@ -335,16 +364,51 @@ Onboarding is first-login per lab. Role changes later show a banner (`role_chang
 
 ---
 
-## 8. Frontend structure
+## 9. Frontend structure
 
 - React + Vite + TanStack Query  
 - [`AuthContext`](../frontend/src/context/AuthContext.tsx) — token, orgId, labId  
 - [`AppShell`](../frontend/src/components/layout/AppShell.tsx) — nav by effective role, onboarding guide, role-change banner  
 - Org/lab switcher updates localStorage + API headers  
 
-## 9. Backend module map
+---
 
-See [§3 API architecture](#3-api-architecture) for layers, handler pipeline, endpoint map, and error contract.
+## 10. Data model
+
+Authoritative table definitions: [SCHEMA.md](SCHEMA.md). SQLAlchemy models: `backend/app/models/`.
+
+```mermaid
+erDiagram
+  users ||--o{ organization_memberships : has
+  users ||--o{ lab_memberships : has
+  organizations ||--o{ labs : has
+  organizations ||--o{ tools : has
+  labs ||--o{ tasks : has
+  labs ||--o| lab_google_workspace : has
+  labs ||--o{ lab_tool_policies : has
+  labs ||--o{ lab_onboarding_progress : has
+  tools ||--o{ tool_access : has
+  users ||--o{ tool_access : has
+  organizations ||--o{ audit_events : has
+  organizations ||--o{ invitations : has
+```
+
+**Key entities added after the original EDD:**
+
+| Table | Purpose |
+|-------|---------|
+| `lab_google_workspace` | Shared GW infrastructure per lab (not per-user `ToolAccess`) |
+| `lab_tool_policies` | Per-lab tool defaults: `AUTO_ONBOARD` or `REQUEST` |
+| `lab_onboarding_progress` | Contributor scavenger-hunt state per user/lab |
+| `users.platform_role` | Platform Staff (`STAFF` or null) |
+
+**Task workflow (as built):** `BACKLOG → TODO → IN_PROGRESS ↔ BLOCKED → DONE` with optimistic locking on `tasks.version`. No pipeline stages or task history table.
+
+---
+
+## 11. Backend module map
+
+See [§4 API architecture](#4-api-architecture) for layers, handler pipeline, endpoint map, and error contract.
 
 | Module | Responsibility |
 |--------|----------------|
@@ -359,3 +423,21 @@ See [§3 API architecture](#3-api-architecture) for layers, handler pipeline, en
 | `platform` | Staff org create (requires admin invite email) |
 | `audit` | Audit events + notifications |
 | `workers` | Tool + GW provisioning jobs |
+
+---
+
+## 12. Scope and omissions
+
+What the demo **does not** include (see [DESIGN.md Appendix A](DESIGN.md#appendix-a-as-built-deviations-from-this-document) for EDD deltas):
+
+| Area | Status |
+|------|--------|
+| Supabase / OAuth login | Demo JWT only |
+| Email delivery for invites | Link returned/logged only |
+| S3/MinIO file upload pipeline | Attachment URL metadata only |
+| Application cache layer | Not implemented |
+| PRD pipeline stages, `IN_REVIEW`, `Cancelled` | Not implemented |
+| Task history / task-to-tool deep links | Not implemented |
+| Owner / Viewer personas | Collapsed to Admin / Manager / Contributor + Staff |
+| Real Google OAuth / live Calendar | Mock APIs only, visibly labelled in UI |
+| Microservices, outbox pattern, DR runbook | Out of scope per EDD §11 |

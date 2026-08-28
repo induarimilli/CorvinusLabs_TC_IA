@@ -1,4 +1,4 @@
-> **Implementation note (this codebase):** The portal intentionally corrects the earlier EDD framing where Lab was the sole tenant boundary for Admin. **Admin is organization-scoped** (`OrganizationMembership.org_role = ADMIN`). **Manager and Contributor are lab-scoped** (`LabMembership.lab_role`). Multi-org membership is supported. See [ARCHITECTURE.md](ARCHITECTURE.md) and [SCHEMA.md](SCHEMA.md).
+> **Implementation note (this codebase):** The portal intentionally corrects the earlier EDD framing where Lab was the sole tenant boundary for Admin. **Admin is organization-scoped** (`OrganizationMembership.org_role = ADMIN`). **Manager and Contributor are lab-scoped** (`LabMembership.lab_role`). Multi-org membership is supported. See [ARCHITECTURE.md](ARCHITECTURE.md) (as-built) and [Appendix A](#appendix-a-as-built-deviations-from-this-document) below.
 
 ---
 
@@ -384,3 +384,90 @@ everything was built:
 | path back to its organization, and access is never granted by         |
 | identity alone --- only by active, verified membership.*              |
 +-----------------------------------------------------------------------+
+
+---
+
+## Appendix A: As-Built Deviations from This Document
+
+This appendix records how the **final implementation** in this repository differs from the original EDD above. [ARCHITECTURE.md](ARCHITECTURE.md) is the as-built system reference; [SCHEMA.md](SCHEMA.md) is the authoritative data model.
+
+### A.1 Role and tenancy model (intentional correction)
+
+| Topic | Original EDD (§5–6) | As built |
+|-------|---------------------|----------|
+| Role storage | Single org-scoped `Role` FK on memberships (Admin / Manager / Contributor) | Split: `org_role` (`ADMIN` \| `MEMBER`) on `organization_memberships`; `lab_role` (`MANAGER` \| `CONTRIBUTOR`) on `lab_memberships` |
+| Effective permissions | `currentRole` from org membership | `TenantContext.effective_role()` from org role + **`X-Lab-Id`** header |
+| Admin task access | Implied full org/lab control | Admin is **read-only on tasks** — operational CRUD is Manager/Contributor only |
+| Legacy `roles` table | Source of truth | Kept for FK compatibility; **auth uses `org_role` / `lab_role`** |
+| Multi-lab roles | Manager in one org, Contributor in another | Same person can differ **per lab within one org** (e.g. Manager @ Perception, Contributor @ Simulation) |
+
+### A.2 Authentication and platform
+
+| Topic | Original EDD (§2) | As built |
+|-------|-------------------|----------|
+| Identity | Supabase Auth | **Demo JWT** — passwordless `POST /auth/demo-login` with seeded users; app owns RBAC |
+| Platform admin | Not specified | **`users.platform_role = STAFF`** — `/platform/*` for org create/deactivate and analytics; not grantable via org invites |
+
+### A.3 Google Workspace and research tools
+
+| Topic | Original EDD (§3.4, §8) | As built |
+|-------|-------------------------|----------|
+| Google Workspace | Same `ToolConnector` interface as CVAT/Isaac Sim | **Separate domain** — `lab_google_workspace` table, dedicated router, in-memory mock client (Drive, Calendar, Chat, Meet) |
+| GW scope | Per-user `ToolAccess` implied by tool model | **One shared workspace per lab**, provisioned by org Admin |
+| Tool access flow | Manager grant → `REQUESTED` → worker | Also: Contributor **request → `PENDING_APPROVAL`**, manager approve/deny; **`lab_tool_policies`** (`AUTO_ONBOARD` / `REQUEST`); managers **launch without `ToolAccess` row** in labs they manage; **`AUTO_ONBOARD` on onboarding complete** |
+| Connectors | All external tools via registry | CVAT, Isaac Sim, Protocol Tool via `ToolConnector`; GW mocks **not** routed through that registry |
+
+### A.4 Onboarding (new domain)
+
+Not described in this EDD. As built:
+
+- Contributor **scavenger-hunt onboarding** per lab (`lab_onboarding_progress`)
+- Guided UI steps with nav highlights; completes unlock of `AUTO_ONBOARD` tools
+- Role changes set `role_change_notice` banner — **do not** re-trigger onboarding
+
+### A.5 Infrastructure and async jobs
+
+| Topic | Original EDD (§2, §10–11) | As built |
+|-------|---------------------------|----------|
+| Job dispatch | Redis queue → dedicated worker | **Primary: FastAPI `BackgroundTasks`** (in-process); Redis worker optional in Docker Compose |
+| Caching | Key namespacing described (§4) | **No application cache layer** (consistent with §11 out-of-scope) |
+| File storage | S3-compatible, org/lab paths, auth-checked URLs | MinIO in Compose; task attachments store **`file_url` metadata** only — no full upload pipeline |
+| Invitation email | “Queue email” on create (§9) | Invite **link returned/logged**; no email send/queue |
+
+### A.6 API and errors
+
+| Topic | Original EDD (§4, §9) | As built |
+|-------|----------------------|----------|
+| Request context | `currentUser`, `currentOrganization`, `currentMembership`, `currentRole` | Adds **`current_lab`**, **`lab_role`**, **`X-Lab-Id`** |
+| Error codes | Example: `TOOL_ACCESS_DENIED` | Generic codes: `UNAUTHORIZED`, `FORBIDDEN`, `NOT_FOUND`, `CONFLICT`, `INTERNAL_ERROR` — same JSON shape |
+| Surface area | Representative sample | Full modular routers: auth, orgs, memberships, invitations, tasks, tools, google_workspace, onboarding, platform, audit — see [ARCHITECTURE.md §4](ARCHITECTURE.md#4-api-architecture) |
+
+### A.7 Tasks
+
+| Topic | Original EDD (§7) | As built |
+|-------|-------------------|----------|
+| Status workflow | `BACKLOG → TODO → IN_PROGRESS ↔ BLOCKED → DONE` | **Matches EDD**; optimistic locking on `version` |
+| PRD extras | — | **Not built:** pipeline stages, `IN_REVIEW` / `Cancelled`, task history table, task-to-tool deep links |
+| Comments / attachments | Not in EDD ERD detail | **Built** (simple CRUD; attachments are URL metadata) |
+
+### A.8 PRD role simplification
+
+The PRD defines five lab personas (Owner, Lab Admin, Coordinator, Contributor, Viewer). This EDD collapsed to three; the build maps:
+
+- **Admin** ≈ Lab Admin (org-scoped)
+- **Manager** ≈ Coordinator (lab-scoped)
+- **Contributor** ≈ Contributor (lab-scoped)
+- **Owner / Viewer** — not implemented; **Staff** added for platform ops
+
+### A.9 What stayed the same
+
+These EDD principles were kept in the final build:
+
+- Modular monolith (FastAPI + React + Postgres)
+- Membership-based authorization, not a global user role field
+- Server-side tenant isolation on every org-scoped request
+- Deny-by-default, resource-scoped RBAC
+- Async, stateful tool provisioning with explicit `FAILED` state
+- `ToolConnector` pattern for research tools
+- Append-only audit log
+- Uniform error response envelope with `requestId`
