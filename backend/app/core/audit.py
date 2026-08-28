@@ -1,6 +1,7 @@
 import uuid
 from dataclasses import dataclass
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
@@ -10,7 +11,6 @@ from app.models import (
     Notification,
     Organization,
     OrganizationMembership,
-    Role,
     User,
 )
 
@@ -20,9 +20,47 @@ class TenantContext:
     current_user: User
     current_organization: Organization
     current_membership: OrganizationMembership
-    current_role: Role
+    org_role: str  # ADMIN | MEMBER
     current_lab: Lab | None = None
+    lab_role: str | None = None  # MANAGER | CONTRIBUTOR for current_lab header context
     request_id: str = ""
+
+    @property
+    def is_org_admin(self) -> bool:
+        return self.org_role == "ADMIN"
+
+    def effective_role(self, lab_role: str | None = None) -> str:
+        if self.is_org_admin:
+            return "Admin"
+        role = lab_role or self.lab_role
+        return org_display_role("MEMBER", [role] if role else [])
+
+
+def org_display_role(org_role: str, lab_roles: list[str]) -> str:
+    """Human-facing role label for an org context (header/login)."""
+    if org_role == "ADMIN":
+        return "Admin"
+    if "MANAGER" in lab_roles:
+        return "Manager"
+    if "CONTRIBUTOR" in lab_roles:
+        return "Contributor"
+    return "Member"
+
+
+async def get_user_lab_role(
+    db: AsyncSession, user_id: uuid.UUID, lab_id: uuid.UUID, org_id: uuid.UUID
+) -> str | None:
+    result = await db.execute(
+        select(LabMembership.lab_role)
+        .join(Lab, Lab.id == LabMembership.lab_id)
+        .where(
+            LabMembership.user_id == user_id,
+            LabMembership.lab_id == lab_id,
+            LabMembership.status == "ACTIVE",
+            Lab.organization_id == org_id,
+        )
+    )
+    return result.scalar_one_or_none()
 
 
 async def write_audit(
@@ -68,8 +106,6 @@ async def write_notification(
 
 
 async def get_user_lab_ids(db: AsyncSession, user_id: uuid.UUID, org_id: uuid.UUID) -> list[uuid.UUID]:
-    from sqlalchemy import select
-
     result = await db.execute(
         select(LabMembership.lab_id)
         .join(Lab, Lab.id == LabMembership.lab_id)

@@ -7,9 +7,11 @@ from app.core.config import settings
 from app.core.errors import ErrorHandlerMiddleware
 from app.modules.audit.router import router as audit_router
 from app.modules.auth.router import router as auth_router
+from app.modules.google_workspace.router import router as google_workspace_router
 from app.modules.invitations.router import router as invitations_router
 from app.modules.memberships.router import router as memberships_router
 from app.modules.organizations.router import router as organizations_router
+from app.modules.platform.router import router as platform_router
 from app.modules.tasks.router import router as tasks_router
 from app.modules.tools.router import router as tools_router
 
@@ -36,7 +38,15 @@ app.include_router(memberships_router)
 app.include_router(invitations_router)
 app.include_router(tasks_router)
 app.include_router(tools_router)
+app.include_router(platform_router)
 app.include_router(audit_router)
+app.include_router(google_workspace_router)
+
+
+@app.get("/connectors")
+async def list_connectors():
+    from app.connectors.registry import CONNECTOR_META
+    return CONNECTOR_META
 
 
 @app.get("/health")

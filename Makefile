@@ -49,7 +49,7 @@ demo-reset:
 		docker compose exec api alembic upgrade head; \
 		docker compose exec api python scripts/seed.py; \
 	else \
-		psql -h localhost -d corvinus -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"; \
+		psql -h localhost -d corvinus -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public; GRANT ALL ON SCHEMA public TO corvinus; GRANT ALL ON SCHEMA public TO public;"; \
 		cd backend && alembic upgrade head && python3 scripts/seed.py; \
 	fi
 

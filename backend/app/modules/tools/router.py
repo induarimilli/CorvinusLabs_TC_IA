@@ -11,9 +11,16 @@ from app.core.database import async_session_factory, get_db
 from app.core.errors import ForbiddenError, NotFoundError
 from app.core.permissions import Permission, authorize
 from app.models import Tool, ToolAccess, User
-from app.schemas import ToolAccessGrant, ToolAccessOut, ToolCreate, ToolLaunchOut, ToolOut, ToolUpdate
+from app.schemas import ToolAccessGrant, ToolAccessOut, ToolCreate, ToolHealthOut, ToolLaunchOut, ToolOut, ToolSessionOut, ToolUpdate
 
 router = APIRouter(tags=["tools"])
+
+CATEGORY_TO_CONNECTOR = {
+    "annotation": "cvat",
+    "simulation": "isaac_sim",
+    "protocol": "protocol_tool",
+    "data_pipeline": "protocol_tool",
+}
 
 
 async def run_provisioning_job(access_id: uuid.UUID, org_id: uuid.UUID) -> None:
@@ -26,7 +33,6 @@ async def run_provisioning_job(access_id: uuid.UUID, org_id: uuid.UUID) -> None:
 
 def schedule_provisioning(background_tasks: BackgroundTasks, access_id: uuid.UUID, org_id: uuid.UUID) -> None:
     background_tasks.add_task(run_provisioning_job, access_id, org_id)
-    asyncio.create_task(run_provisioning_job(access_id, org_id))
 
 
 @router.get("/organizations/{org_id}/tools", response_model=list[ToolOut])
@@ -48,12 +54,21 @@ async def create_tool(
     db: AsyncSession = Depends(get_db),
 ):
     authorize(ctx, Permission.TOOLS_MANAGE)
+    connector_type = CATEGORY_TO_CONNECTOR.get(body.category)
+    if not connector_type:
+        from app.core.errors import APIError
+        raise APIError("INVALID_CATEGORY", f"Unknown tool category: {body.category}", 400)
+
+    config = dict(body.connector_config or {})
+    if body.service_url:
+        config["base_url"] = body.service_url
+
     tool = Tool(
         organization_id=org_id,
         name=body.name,
         description=body.description,
-        type=body.type,
-        connector_config=body.connector_config,
+        type=connector_type,
+        connector_config=config,
     )
     db.add(tool)
     await db.flush()
@@ -276,3 +291,69 @@ async def launch_tool(
     connector = get_connector(tool.type)
     url = await connector.launch(tool, ctx.current_user)
     return ToolLaunchOut(launch_url=url)
+
+
+@router.get("/tools/{tool_id}/session", response_model=ToolSessionOut)
+async def get_tool_session(
+    tool_id: uuid.UUID,
+    ctx: TenantContext = Depends(get_tenant_context),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.connectors.registry import get_connector
+
+    authorize(ctx, Permission.TOOLS_LAUNCH)
+    result = await db.execute(select(Tool).where(Tool.id == tool_id))
+    tool = result.scalar_one_or_none()
+    if not tool:
+        raise NotFoundError("Tool not found")
+    authorize(ctx, Permission.TOOLS_LAUNCH, tool)
+
+    access_result = await db.execute(
+        select(ToolAccess).where(
+            ToolAccess.tool_id == tool_id,
+            ToolAccess.user_id == ctx.current_user.id,
+            ToolAccess.provisioning_status == "ACTIVE",
+        )
+    )
+    if not access_result.scalar_one_or_none():
+        raise ForbiddenError("No active access to this tool")
+
+    connector = get_connector(tool.type)
+    launch_url = await connector.launch(tool, ctx.current_user)
+    session_data = {}
+    if hasattr(connector, "session_data"):
+        session_data = await connector.session_data(tool, ctx.current_user)
+
+    return ToolSessionOut(
+        tool_id=tool.id,
+        tool_name=tool.name,
+        tool_type=tool.type,
+        launch_url=launch_url,
+        status="ACTIVE",
+        session=session_data,
+    )
+
+
+@router.get("/tools/{tool_id}/health", response_model=ToolHealthOut)
+async def tool_health(
+    tool_id: uuid.UUID,
+    ctx: TenantContext = Depends(get_tenant_context),
+    db: AsyncSession = Depends(get_db),
+):
+    from app.connectors.registry import get_connector
+
+    authorize(ctx, Permission.TOOLS_READ)
+    result = await db.execute(select(Tool).where(Tool.id == tool_id))
+    tool = result.scalar_one_or_none()
+    if not tool:
+        raise NotFoundError("Tool not found")
+    authorize(ctx, Permission.TOOLS_READ, tool)
+
+    connector = get_connector(tool.type)
+    healthy = await connector.health_check(tool)
+    return ToolHealthOut(
+        tool_id=tool.id,
+        healthy=healthy,
+        connector_type=tool.type,
+        message="Connector reachable" if healthy else "Connector unavailable",
+    )

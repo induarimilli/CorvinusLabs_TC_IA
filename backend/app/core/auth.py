@@ -5,13 +5,12 @@ from fastapi import Depends, Header, Request
 from jose import JWTError, jwt
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
-from app.core.audit import TenantContext
+from app.core.audit import TenantContext, get_user_lab_role
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.errors import ForbiddenError, UnauthorizedError
-from app.models import Lab, Organization, OrganizationMembership, Role, User
+from app.models import Lab, LabMembership, Organization, OrganizationMembership, User
 
 
 def create_access_token(user_id: uuid.UUID, email: str) -> str:
@@ -66,9 +65,7 @@ async def get_tenant_context(
         raise ForbiddenError("Organization not found or disabled")
 
     result = await db.execute(
-        select(OrganizationMembership)
-        .options(selectinload(OrganizationMembership.role))
-        .where(
+        select(OrganizationMembership).where(
             OrganizationMembership.user_id == current_user.id,
             OrganizationMembership.organization_id == org_id,
             OrganizationMembership.status == "ACTIVE",
@@ -78,10 +75,10 @@ async def get_tenant_context(
     if not membership:
         raise ForbiddenError("No active membership in this organization")
 
-    role_result = await db.execute(select(Role).where(Role.id == membership.role_id))
-    role = role_result.scalar_one()
+    org_role = membership.org_role or "MEMBER"
 
     current_lab = None
+    lab_role = None
     if x_lab_id:
         lab_id = uuid.UUID(x_lab_id)
         lab_result = await db.execute(
@@ -90,12 +87,17 @@ async def get_tenant_context(
         current_lab = lab_result.scalar_one_or_none()
         if not current_lab:
             raise ForbiddenError("Lab not found in this organization")
+        if org_role != "ADMIN":
+            lab_role = await get_user_lab_role(db, current_user.id, lab_id, org_id)
+            if not lab_role:
+                raise ForbiddenError("Not a member of this lab")
 
     return TenantContext(
         current_user=current_user,
         current_organization=organization,
         current_membership=membership,
-        current_role=role,
+        org_role=org_role,
         current_lab=current_lab,
+        lab_role=lab_role,
         request_id=getattr(request.state, "request_id", ""),
     )

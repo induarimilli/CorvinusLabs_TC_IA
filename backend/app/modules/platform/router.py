@@ -1,0 +1,152 @@
+import uuid
+import re
+
+from fastapi import APIRouter, Depends
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.audit import write_audit
+from app.core.auth import get_current_user
+from app.core.database import get_db
+from app.core.errors import ConflictError, NotFoundError
+from app.core.permissions import Permission, authorize_platform, is_staff
+from app.models import (
+    Organization,
+    OrganizationMembership,
+    OrganizationSettings,
+    Role,
+    Task,
+    Tool,
+    ToolAccess,
+    User,
+)
+from app.schemas import OrganizationCreate, PlatformAnalyticsOut, OrganizationOut
+
+router = APIRouter(prefix="/platform", tags=["platform"])
+
+
+async def _create_org_with_defaults(session: AsyncSession, name: str, slug: str, actor_id: uuid.UUID) -> Organization:
+    existing = await session.execute(select(Organization).where(Organization.slug == slug))
+    if existing.scalar_one_or_none():
+        raise ConflictError(f"Organization slug '{slug}' already exists")
+
+    org = Organization(name=name, slug=slug, status="ACTIVE")
+    session.add(org)
+    await session.flush()
+
+    session.add(OrganizationSettings(organization_id=org.id))
+
+    for role_name, desc in [
+        ("Admin", "Organization administrator"),
+        ("Manager", "Lab manager"),
+        ("Contributor", "Lab contributor"),
+    ]:
+        session.add(Role(organization_id=org.id, name=role_name, description=desc))
+
+    await session.flush()
+    await write_audit(
+        session,
+        organization_id=org.id,
+        actor_user_id=actor_id,
+        action="organization.created",
+        entity_type="Organization",
+        entity_id=org.id,
+        metadata={"name": name, "created_by": "platform_staff"},
+    )
+    return org
+
+
+@router.post("/organizations", response_model=OrganizationOut)
+async def create_organization(
+    body: OrganizationCreate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    authorize_platform(current_user, Permission.PLATFORM_ORG_CREATE)
+    slug = body.slug or re.sub(r"[^a-z0-9]+", "-", body.name.lower()).strip("-")
+    org = await _create_org_with_defaults(db, body.name, slug, current_user.id)
+    return OrganizationOut.model_validate(org)
+
+
+@router.patch("/organizations/{org_id}/deactivate", response_model=OrganizationOut)
+async def deactivate_organization(
+    org_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    authorize_platform(current_user, Permission.PLATFORM_ORG_DEACTIVATE)
+    result = await db.execute(select(Organization).where(Organization.id == org_id))
+    org = result.scalar_one_or_none()
+    if not org:
+        raise NotFoundError("Organization not found")
+    org.status = "DISABLED"
+    await db.flush()
+    await write_audit(
+        db,
+        organization_id=org.id,
+        actor_user_id=current_user.id,
+        action="organization.deactivated",
+        entity_type="Organization",
+        entity_id=org.id,
+    )
+    return OrganizationOut.model_validate(org)
+
+
+@router.get("/analytics", response_model=PlatformAnalyticsOut)
+async def platform_analytics(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    authorize_platform(current_user, Permission.PLATFORM_ANALYTICS_READ)
+
+    active_orgs = await db.scalar(
+        select(func.count()).select_from(Organization).where(Organization.status == "ACTIVE")
+    )
+    total_users = await db.scalar(select(func.count()).select_from(User).where(User.status == "ACTIVE"))
+    total_tasks = await db.scalar(select(func.count()).select_from(Task))
+    open_tasks = await db.scalar(select(func.count()).select_from(Task).where(Task.status != "DONE"))
+    total_tools = await db.scalar(select(func.count()).select_from(Tool))
+    tool_access_total = await db.scalar(select(func.count()).select_from(ToolAccess))
+    tool_access_active = await db.scalar(
+        select(func.count()).select_from(ToolAccess).where(ToolAccess.provisioning_status == "ACTIVE")
+    )
+    tool_access_failed = await db.scalar(
+        select(func.count()).select_from(ToolAccess).where(ToolAccess.provisioning_status == "FAILED")
+    )
+
+    success_rate = 0.0
+    if tool_access_total and tool_access_total > 0:
+        success_rate = round((tool_access_active or 0) / tool_access_total * 100, 1)
+
+    org_rows = await db.execute(
+        select(Organization).where(Organization.status == "ACTIVE").order_by(Organization.name)
+    )
+    org_summaries = []
+    for org in org_rows.scalars().all():
+        member_count = await db.scalar(
+            select(func.count())
+            .select_from(OrganizationMembership)
+            .where(OrganizationMembership.organization_id == org.id, OrganizationMembership.status == "ACTIVE")
+        )
+        task_count = await db.scalar(
+            select(func.count()).select_from(Task).where(Task.organization_id == org.id)
+        )
+        org_summaries.append({
+            "id": str(org.id),
+            "name": org.name,
+            "slug": org.slug,
+            "member_count": member_count or 0,
+            "task_count": task_count or 0,
+        })
+
+    return PlatformAnalyticsOut(
+        active_organizations=active_orgs or 0,
+        total_users=total_users or 0,
+        total_tasks=total_tasks or 0,
+        open_tasks=open_tasks or 0,
+        total_tools=total_tools or 0,
+        tool_provisioning_success_rate=success_rate,
+        tool_access_active=tool_access_active or 0,
+        tool_access_failed=tool_access_failed or 0,
+        organizations=org_summaries,
+    )

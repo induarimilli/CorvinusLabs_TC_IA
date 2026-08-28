@@ -5,16 +5,18 @@ interface User {
   id: string;
   name: string;
   email: string;
+  platform_role?: string | null;
 }
 
 interface AuthState {
   user: User | null;
   token: string | null;
+  isStaff: boolean;
   orgId: string | null;
   labId: string | null;
-  login: (userId: string, organizationId?: string, labId?: string) => Promise<void>;
+  login: (userId: string) => Promise<void>;
   logout: () => void;
-  setOrgId: (id: string) => void;
+  setOrgId: (id: string, defaultLabId?: string | null) => void;
   setLabId: (id: string | null) => void;
 }
 
@@ -26,44 +28,60 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return stored ? JSON.parse(stored) : null;
   });
   const [token, setToken] = useState<string | null>(() => localStorage.getItem('token'));
+  const [isStaff, setIsStaff] = useState(() => localStorage.getItem('isStaff') === 'true');
   const [orgId, setOrgIdState] = useState<string | null>(() => localStorage.getItem('orgId'));
   const [labId, setLabIdState] = useState<string | null>(() => localStorage.getItem('labId'));
 
-  const login = useCallback(async (userId: string, organizationId?: string, labId?: string) => {
+  const login = useCallback(async (userId: string) => {
     const res = await api<{
       access_token: string;
       user: User;
-      default_organization_id: string;
+      is_staff: boolean;
+      default_organization_id: string | null;
       default_lab_id: string | null;
-    }>('/auth/demo-login', {
-      method: 'POST',
-      body: { user_id: userId, organization_id: organizationId || undefined },
-    });
+    }>('/auth/demo-login', { method: 'POST', body: { user_id: userId } });
+
     localStorage.setItem('token', res.access_token);
     localStorage.setItem('user', JSON.stringify(res.user));
-    localStorage.setItem('orgId', organizationId || res.default_organization_id);
-    const resolvedLabId = labId || res.default_lab_id;
-    if (resolvedLabId) localStorage.setItem('labId', resolvedLabId);
-    else localStorage.removeItem('labId');
+    localStorage.setItem('isStaff', String(res.is_staff));
+
     setToken(res.access_token);
     setUser(res.user);
-    setOrgIdState(organizationId || res.default_organization_id);
-    setLabIdState(resolvedLabId);
+    setIsStaff(res.is_staff);
+
+    if (res.is_staff) {
+      localStorage.removeItem('orgId');
+      localStorage.removeItem('labId');
+      setOrgIdState(null);
+      setLabIdState(null);
+    } else {
+      localStorage.setItem('orgId', res.default_organization_id!);
+      if (res.default_lab_id) localStorage.setItem('labId', res.default_lab_id);
+      else localStorage.removeItem('labId');
+      setOrgIdState(res.default_organization_id);
+      setLabIdState(res.default_lab_id);
+    }
   }, []);
 
   const logout = useCallback(() => {
     localStorage.clear();
     setToken(null);
     setUser(null);
+    setIsStaff(false);
     setOrgIdState(null);
     setLabIdState(null);
   }, []);
 
-  const setOrgId = useCallback((id: string) => {
+  const setOrgId = useCallback((id: string, defaultLabId?: string | null) => {
     localStorage.setItem('orgId', id);
     setOrgIdState(id);
-    localStorage.removeItem('labId');
-    setLabIdState(null);
+    if (defaultLabId) {
+      localStorage.setItem('labId', defaultLabId);
+      setLabIdState(defaultLabId);
+    } else {
+      localStorage.removeItem('labId');
+      setLabIdState(null);
+    }
   }, []);
 
   const setLabId = useCallback((id: string | null) => {
@@ -73,7 +91,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <AuthContext.Provider value={{ user, token, orgId, labId, login, logout, setOrgId, setLabId }}>
+    <AuthContext.Provider value={{ user, token, isStaff, orgId, labId, login, logout, setOrgId, setLabId }}>
       {children}
     </AuthContext.Provider>
   );

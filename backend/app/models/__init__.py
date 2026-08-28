@@ -28,6 +28,7 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
     avatar_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
     status: Mapped[str] = mapped_column(String(50), default=UserStatus.ACTIVE.value)
+    platform_role: Mapped[str | None] = mapped_column(String(50), nullable=True)
     supabase_auth_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
@@ -81,6 +82,7 @@ class OrganizationMembership(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
     organization_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("organizations.id"), nullable=False)
     role_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("roles.id"), nullable=False)
+    org_role: Mapped[str] = mapped_column(String(50), default="MEMBER")  # ADMIN | MEMBER
     joined_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     status: Mapped[str] = mapped_column(String(50), default=MembershipStatus.ACTIVE.value)
 
@@ -114,6 +116,7 @@ class LabMembership(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
     lab_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("labs.id"), nullable=False)
     role_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("roles.id"), nullable=False)
+    lab_role: Mapped[str] = mapped_column(String(50), default="CONTRIBUTOR")  # MANAGER | CONTRIBUTOR
     joined_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     status: Mapped[str] = mapped_column(String(50), default=MembershipStatus.ACTIVE.value)
 
@@ -147,6 +150,8 @@ class Invitation(Base):
     organization_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("organizations.id"), nullable=False)
     email: Mapped[str] = mapped_column(String(255), nullable=False)
     role_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("roles.id"), nullable=False)
+    org_role: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    lab_role: Mapped[str | None] = mapped_column(String(50), nullable=True)
     lab_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("labs.id"), nullable=True)
     token: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
     status: Mapped[str] = mapped_column(String(50), default="PENDING")
@@ -264,3 +269,21 @@ class Notification(Base):
     message: Mapped[str] = mapped_column(Text, nullable=False)
     is_read: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class LabGoogleWorkspace(Base):
+    __tablename__ = "lab_google_workspace"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    organization_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("organizations.id"), nullable=False)
+    lab_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("labs.id"), nullable=False, unique=True)
+    drive_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    calendar_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    chat_space_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    meet_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    provisioning_status: Mapped[str] = mapped_column(String(50), default="REQUESTED")
+    failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
