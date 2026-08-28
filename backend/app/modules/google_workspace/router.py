@@ -23,6 +23,7 @@ from app.core.database import get_db
 from app.core.errors import ConflictError, ForbiddenError, NotFoundError
 from app.core.permissions import Permission, authorize
 from app.models import Lab, LabGoogleWorkspace
+from app.modules.google_workspace.service import request_lab_google_workspace
 from app.schemas import (
     CalendarEventOut,
     ChatMessageCreate,
@@ -109,19 +110,9 @@ async def provision_google_workspace(
             return LabGoogleWorkspaceOut.model_validate(existing_ws)
         raise ConflictError("Google Workspace already provisioned for this lab")
 
-    ws = LabGoogleWorkspace(
-        organization_id=org_id,
-        lab_id=lab_id,
-        provisioning_status="REQUESTED",
+    ws = await request_lab_google_workspace(
+        db, org_id, lab_id, ctx.current_user.id, background_tasks=background_tasks
     )
-    db.add(ws)
-    await db.flush()
-    await write_audit(
-        db, organization_id=org_id, actor_user_id=ctx.current_user.id,
-        action="google_workspace.provision_requested", entity_type="LabGoogleWorkspace", entity_id=ws.id,
-        metadata={"lab_id": str(lab_id)},
-    )
-    background_tasks.add_task(run_workspace_provisioning, ws.id)
     return LabGoogleWorkspaceOut.model_validate(ws)
 
 

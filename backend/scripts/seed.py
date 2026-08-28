@@ -23,6 +23,7 @@ from app.core.config import settings
 from app.core.permissions import PLATFORM_ROLE
 from app.models import (
     Lab,
+    LabGoogleWorkspace,
     LabMembership,
     LabOnboardingProgress,
     LabToolPolicy,
@@ -65,11 +66,45 @@ async def get_or_create_role(session: AsyncSession, org_id: uuid.UUID, name: str
     return role
 
 
+def active_google_workspace(org_id: uuid.UUID, lab_id: uuid.UUID) -> LabGoogleWorkspace:
+    return LabGoogleWorkspace(
+        organization_id=org_id,
+        lab_id=lab_id,
+        provisioning_status="ACTIVE",
+        drive_url=f"https://drive.google.com/drive/folders/mock-{lab_id}",
+        calendar_id=f"lab-{lab_id}@group.calendar.google.com",
+        chat_space_url=f"https://chat.google.com/room/mock-{lab_id}",
+        meet_url=f"https://meet.google.com/mock-{str(lab_id)[:8]}",
+    )
+
+
+async def backfill_lab_google_workspaces(session: AsyncSession) -> int:
+    """Ensure every lab has an ACTIVE Google Workspace row (idempotent)."""
+    labs = (await session.execute(select(Lab))).scalars().all()
+    existing_lab_ids = set(
+        (await session.execute(select(LabGoogleWorkspace.lab_id))).scalars().all()
+    )
+    added = 0
+    for lab in labs:
+        if lab.id in existing_lab_ids:
+            continue
+        session.add(active_google_workspace(lab.organization_id, lab.id))
+        added += 1
+    if added:
+        await session.flush()
+    return added
+
+
 async def seed() -> None:
     async with Session() as session:
         existing = await session.execute(select(User).limit(1))
         if existing.scalar_one_or_none():
-            print("Database already seeded. Run make demo-reset to re-seed.")
+            added = await backfill_lab_google_workspaces(session)
+            await session.commit()
+            if added:
+                print(f"Backfilled Google Workspace for {added} lab(s).")
+            else:
+                print("Database already seeded. Run make demo-reset to re-seed.")
             return
 
         users = [
@@ -105,6 +140,12 @@ async def seed() -> None:
         lab_analysis = Lab(id=IDS["lab_analysis"], organization_id=org_b.id, name="Analysis Lab", description="Data analysis pipeline")
         session.add_all([lab_perception, lab_simulation, lab_analysis])
         await session.flush()
+
+        session.add_all([
+            active_google_workspace(org_a.id, lab_perception.id),
+            active_google_workspace(org_a.id, lab_simulation.id),
+            active_google_workspace(org_b.id, lab_analysis.id),
+        ])
 
         session.add_all([
             LabToolPolicy(lab_id=lab_simulation.id, tool_type="isaac_sim", access_mode="AUTO_ONBOARD"),

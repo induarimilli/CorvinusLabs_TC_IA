@@ -2,7 +2,7 @@ import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, Header, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, Request
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,6 +13,7 @@ from app.core.database import get_db
 from app.core.errors import ConflictError, ForbiddenError, NotFoundError
 from app.core.permissions import Permission, authorize
 from app.models import Invitation, Lab, LabGoogleWorkspace, LabMembership, OrganizationMembership, OrganizationSettings, Role, Task, Tool, User
+from app.modules.google_workspace.service import request_lab_google_workspace
 from app.schemas import (
     DashboardStats,
     InvitationOut,
@@ -228,6 +229,7 @@ async def list_labs(
 async def create_lab(
     org_id: uuid.UUID,
     body: LabCreate,
+    background_tasks: BackgroundTasks,
     ctx: TenantContext = Depends(get_tenant_context),
     db: AsyncSession = Depends(get_db),
 ):
@@ -286,6 +288,15 @@ async def create_lab(
         db, organization_id=org_id, actor_user_id=ctx.current_user.id,
         action="lab.created", entity_type="Lab", entity_id=lab.id,
         metadata={"invite_link": invite_out} if invite_out else None,
+    )
+
+    await request_lab_google_workspace(
+        db,
+        org_id,
+        lab.id,
+        ctx.current_user.id,
+        background_tasks=background_tasks,
+        auto=True,
     )
 
     lab_out = LabOut.model_validate(lab)
