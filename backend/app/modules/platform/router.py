@@ -34,6 +34,26 @@ router = APIRouter(prefix="/platform", tags=["platform"])
 
 FRONTEND_URL = "http://localhost:5173"
 
+DEFAULT_ORG_TOOLS = [
+    ("CVAT", "Annotation platform", "cvat"),
+    ("Isaac Sim", "Simulation environment", "isaac_sim"),
+    ("Protocol Tool", "Corvinus Labs protocol automation", "protocol_tool"),
+]
+
+
+async def _seed_default_org_tools(session: AsyncSession, org_id: uuid.UUID) -> None:
+    for name, description, tool_type in DEFAULT_ORG_TOOLS:
+        session.add(
+            Tool(
+                organization_id=org_id,
+                name=name,
+                description=description,
+                type=tool_type,
+                status="ENABLED",
+            )
+        )
+    await session.flush()
+
 
 async def _create_org_with_defaults(session: AsyncSession, name: str, slug: str, actor_id: uuid.UUID) -> Organization:
     existing = await session.execute(select(Organization).where(Organization.slug == slug))
@@ -54,6 +74,7 @@ async def _create_org_with_defaults(session: AsyncSession, name: str, slug: str,
         session.add(Role(organization_id=org.id, name=role_name, description=desc))
 
     await session.flush()
+    await _seed_default_org_tools(session, org.id)
     await write_audit(
         session,
         organization_id=org.id,
